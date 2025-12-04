@@ -57,9 +57,15 @@ class VectorDBClient:
     # ---------------- Query with metadata filter ----------------
     def query_where(self, query: str, where: dict, top_k: int = 3):
         """Query with a Chroma metadata filter (e.g., {"type":"recorder_refined","flow_hash":"abc123"})."""
+        # ChromaDB requires $and for multiple fields
+        if where and len(where) > 1:
+            chroma_where = {"$and": [{k: v} for k, v in where.items()]}
+        else:
+            chroma_where = where or {}
+        
         server_filtered = True
         try:
-            results = self.collection.query(query_texts=[query], where=where or {}, n_results=top_k)
+            results = self.collection.query(query_texts=[query], where=chroma_where, n_results=top_k)
         except TypeError:
             # Older Chroma may not support where in this signature; fallback to unfiltered
             results = self.collection.query(query_texts=[query], n_results=top_k)
@@ -143,8 +149,14 @@ class VectorDBClient:
         """Return all documents matching a metadata filter, up to limit. Preserves original order returned by Chroma.
         Example where: {"type": "recorder_refined", "flow_hash": "abc123"}
         """
+        # ChromaDB requires $and for multiple fields
+        if where and len(where) > 1:
+            chroma_where = {"$and": [{k: v} for k, v in where.items()]}
+        else:
+            chroma_where = where or {}
+        
         try:
-            results = self.collection.get(where=where or {}, limit=limit)
+            results = self.collection.get(where=chroma_where, limit=limit)
         except (TypeError, ValueError):
             # Older client may not support where in get; fallback to list_all and filter client-side
             all_docs = self.list_all(limit=limit)

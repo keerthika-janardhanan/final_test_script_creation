@@ -74,7 +74,21 @@ def ingest_refined_file(file_path: str, flow_name: str | None = None) -> dict:
     vdb = VectorDBClient(path=os.getenv("VECTOR_DB_PATH", "./vector_store"))
 
     try:
-        vdb.collection.delete(where={"flow_slug": flow_slug, "type": source_type})
+        # ChromaDB requires $and for multi-field filters in delete operations
+        vdb.collection.delete(where={"$and": [{"flow_slug": flow_slug}, {"type": source_type}]})
+    except Exception:
+        pass
+
+    # Clear hashstore entries for this flow to allow re-ingestion
+    try:
+        import sqlite3
+        db_path = os.path.join(os.path.dirname(__file__), "hashstore.db")
+        if os.path.exists(db_path):
+            conn = sqlite3.connect(db_path)
+            c = conn.cursor()
+            c.execute("DELETE FROM hashes WHERE key LIKE ?", (f"{flow_slug}%",))
+            conn.commit()
+            conn.close()
     except Exception:
         pass
 

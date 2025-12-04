@@ -8,7 +8,7 @@ from typing import Any, Dict
 import requests
 
 
-BACKEND_BASE_URL = os.getenv("BACKEND_BASE_URL", "http://localhost:8000")
+BACKEND_BASE_URL = os.getenv("BACKEND_BASE_URL", "http://localhost:8001")
 
 
 def publish_recorder_event(session_id: str, message: str, level: str = "info", **details: Any) -> None:

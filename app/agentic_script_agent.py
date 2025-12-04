@@ -337,6 +337,85 @@ class AgenticScriptAgent:
                 "Use the slug '{slug}' to name new files consistently.\n"
                 "Ensure TypeScript code compiles, uses proper imports, and references generated locators/pages.\n"
                 "Do NOT wrap the JSON in code fences or add explanations.\n\n"
+                "═══════════════════════════════════════════════════════════════════════════════\n"
+                "CRITICAL: TEST DATA INTEGRATION - MUST FOLLOW EXACTLY\n"
+                "═══════════════════════════════════════════════════════════════════════════════\n\n"
+                "The framework uses Excel files for test data with this structure:\n"
+                "Excel Columns: Invoice ID | Supplier | Number | Amount\n"
+                "Example Row:   10001      | TEST_Sup_001 | CM-SHEZ2233201 | 100.00\n\n"
+                "MANDATORY PATTERN FOR DATA-DRIVEN FIELDS:\n\n"
+                "1. TEXT INPUT FIELDS (Supplier, Number, etc.):\n"
+                "   - Use page.applyData(dataRow, [\"FieldName\"]) for ALL data entry\n"
+                "   - The Page Object handles the mapping automatically\n"
+                "   - Example:\n"
+                "     await namedStep('Enter Supplier', ..., async () => {{\n"
+                "       await payablespage.applyData(dataRow, [\"Supplier\"]);\n"
+                "     }});\n\n"
+                "2. DROPDOWN/AUTOCOMPLETE SELECTIONS:\n"
+                "   - When recording shows 'Enter Supplier' followed by 'Click Allied Manufacturing':\n"
+                "     * Step N: Use applyData to fill the field\n"
+                "     * Step N+1: Use DYNAMIC selector with getDataValue() to click dropdown option\n"
+                "   - NEVER hardcode dropdown option locators like 'alliedManufacturing10001423424234Corporation'\n"
+                "   - Example:\n"
+                "     await namedStep('Enter Supplier', ..., async () => {{\n"
+                "       await payablespage.applyData(dataRow, [\"Supplier\"]);\n"
+                "     }});\n"
+                "     await namedStep('Select Supplier option', ..., async () => {{\n"
+                "       const supplierValue = getDataValue('Supplier', 'Allied Manufacturing');\n"
+                "       await page.getByText(supplierValue).first().click();\n"
+                "     }});\n\n"
+                "3. REUSING SAME DATA FOR MULTIPLE FIELDS:\n"
+                "   - If 'Amount' appears multiple times (e.g., header Amount and line Amount), use applyData for EACH:\n"
+                "     await namedStep('Enter Amount', ..., async () => {{\n"
+                "       await payablespage.applyData(dataRow, [\"Amount\"]);\n"
+                "     }});\n"
+                "     // Later in the flow:\n"
+                "     await namedStep('Enter Line Amount', ..., async () => {{\n"
+                "       await payablespage.applyData(dataRow, [\"Amount\"]);\n"
+                "     }});\n"
+                "   - The Page Object routes to correct fields (amount, amount2) automatically\n\n"
+                "4. COMPLETE DATA MAPPING EXAMPLE:\n"
+                "   Recording shows: 'Enter Allied Manufacturing' → 'Click Allied Manufacturing 10001'\n"
+                "   Generate:\n"
+                "     // Step 19: Click to focus field\n"
+                "     await payablespage.supplier.click();\n"
+                "     \n"
+                "     // Step 20: Fill with test data\n"
+                "     await payablespage.applyData(dataRow, [\"Supplier\"]);\n"
+                "     \n"
+                "     // Step 21: Click dropdown option matching test data\n"
+                "     const supplierValue = getDataValue('Supplier', 'Allied Manufacturing');\n"
+                "     await page.locator('[role=\"option\"]').filter({{ hasText: supplierValue }}).first().click();\n\n"
+                "5. PAGE OBJECT CONSIDERATIONS:\n"
+                "   - applyData() method already exists with these signatures:\n"
+                "     async setSupplier(value: unknown): Promise<void>\n"
+                "     async setNumber(value: unknown): Promise<void>\n"
+                "     async setAmount(value: unknown): Promise<void>\n"
+                "     async applyData(formData: Record<string, any>, keys?: string[]): Promise<void>\n"
+                "   - The applyData() handles key normalization (Supplier/supplier/SUPPLIER all match)\n"
+                "   - Include these methods in generated Page Objects\n"
+                "   - Map multiple same-named fields to numbered locators (amount → amount, amount2, amount3)\n\n"
+                "6. LOCATOR FILE RULES:\n"
+                "   - DO NOT create locators for hardcoded dropdown options\n"
+                "   - Only create locators for:\n"
+                "     * Input fields (supplier, number, amount)\n"
+                "     * Buttons and navigation elements\n"
+                "     * Static UI elements\n"
+                "   - Dropdown options will be selected dynamically via text matching\n\n"
+                "TEST DATA COLUMNS TO RECOGNIZE:\n"
+                "- Supplier: Company name (e.g., TEST_Sup_001, PrimeSource Distributors)\n"
+                "- Number: Invoice/Document number (e.g., CM-SHEZ2233201)\n"
+                "- Amount: Numeric amount (e.g., 100.00)\n"
+                "- Any column name from recorded 'data' field should map to applyData([\"ColumnName\"])\n\n"
+                "ANTI-PATTERNS TO AVOID:\n"
+                "❌ await payablespage.alliedManufacturing10001423424234Corporation.click();\n"
+                "❌ await payablespage.supplier.fill('Allied Manufacturing');\n"
+                "❌ Hardcoding any business data in the test\n\n"
+                "CORRECT PATTERNS:\n"
+                "✅ await payablespage.applyData(dataRow, [\"Supplier\"]);\n"
+                "✅ await page.getByText(getDataValue('Supplier', 'default')).first().click();\n"
+                "✅ Reusing applyData(dataRow, [\"Amount\"]) for multiple amount fields\n\n"
+                "═══════════════════════════════════════════════════════════════════════════════\n\n"
                 "Scenario:\n{scenario}\n\n"
                 "Accepted preview steps:\n{accepted_preview}\n\n"
                 "Framework summary:\n{framework_summary}\n\n"
@@ -425,6 +504,58 @@ class AgenticScriptAgent:
                 "INSUFFICIENT_CONTEXT: No recorder or vector-backed steps found. "
                 "Please record the scenario or ingest relevant docs before generating a preview."
             )
+        # By default, return the full refined steps list as the editable preview.
+        # Set USE_LLM_PREVIEW=true to enable LLM-generated previews instead.
+        try:
+            use_llm = str(os.getenv("USE_LLM_PREVIEW", "")).strip().lower() in {"1", "true", "yes", "on"}
+        except Exception:
+            use_llm = False
+        if vector_steps and not use_llm:
+            return self._format_steps_for_prompt(vector_steps)
+        # Optional LLM path with chunking to handle long refined flows without truncation
+        if vector_steps and use_llm:
+            full_lines = self._format_steps_for_prompt(vector_steps).splitlines()
+            try:
+                chunk_env = os.getenv("PREVIEW_CHUNK_SIZE", "")
+                if chunk_env and chunk_env.strip().lower() not in {"all", "unlimited", "none"}:
+                    chunk_size = max(5, int(chunk_env))
+                else:
+                    chunk_size = 60
+            except Exception:
+                chunk_size = 60
+            chunks: List[List[str]] = [full_lines[i:i+chunk_size] for i in range(0, len(full_lines), chunk_size)] or [[]]
+            combined_steps: List[str] = []
+            # Build static prompt parts once
+            base_scaffold = context.get("scaffold_snippet", "")
+            base_existing = context.get("existing_script_excerpt", "")
+            framework_summary = framework.summary()
+            try:
+                llm = self._ensure_llm()
+            except Exception as exc:
+                logger.warning("LLM initialisation failed (chunked preview): %s", exc)
+                return "\n".join(full_lines)
+            for idx, chunk in enumerate(chunks, start=1):
+                chunk_text = "\n".join(chunk)
+                prompt = self.preview_prompt.format(
+                    scenario=scenario,
+                    enriched_steps=chunk_text,
+                    existing_script_excerpt=base_existing,
+                    scaffold_snippet=base_scaffold,
+                    framework_summary=framework_summary,
+                )
+                try:
+                    response = llm.invoke(prompt)
+                    text = _strip_code_fences(getattr(response, "content", str(response)) or "")
+                except Exception as exc:
+                    logger.warning("LLM invoke failed for preview chunk %d: %s", idx, exc)
+                    text = chunk_text  # fallback to raw chunk
+                # Normalize: remove local numbering so we can renumber globally
+                for line in (text.splitlines() if text else []):
+                    cleaned = re.sub(r"^\s*\d+\.\s*", "", line).strip()
+                    if cleaned:
+                        combined_steps.append(cleaned)
+            # Renumber combined output globally
+            return "\n".join([f"{i+1}. {s}" for i, s in enumerate(combined_steps)])
         prompt = self.preview_prompt.format(
             scenario=scenario,
             enriched_steps=context.get("enriched_steps", ""),
@@ -617,8 +748,7 @@ class AgenticScriptAgent:
             navigation = (meta.get("navigation") or (payload or {}).get("navigation") or "").strip()
             data_val = (meta.get("data") or (payload or {}).get("data") or "").strip()
             expected = (meta.get("expected") or (payload or {}).get("expected") or "").strip()
-            if not (action or navigation):
-                continue
+            # Do not drop steps without action/navigation; preserve numbering for preview continuity
             flow_slug = meta.get("flow_slug") or (payload or {}).get("flow_slug") or resolved_slug or ""
             flow_name = meta.get("flow_name") or (payload or {}).get("flow") or resolved_name or ""
             resolved_name = flow_name or resolved_name
@@ -686,8 +816,7 @@ class AgenticScriptAgent:
                 element = step.get("element") or {}
                 if not isinstance(element, dict):
                     element = {}
-                if not (action or navigation):
-                    continue
+                # Preserve steps even if action/navigation are empty to avoid gaps in numbering
                 formatted.append(
                     {
                         "step": step_no,
@@ -808,9 +937,38 @@ class AgenticScriptAgent:
                 parts.append(f"Data: {data_val}")
             if expected:
                 parts.append(f"Expected: {expected}")
-            if parts:
-                lines.append(f"{step_no}. " + " | ".join(parts))
-        return "\n".join(lines[:40])
+            if not parts:
+                # Fallback to element/locator hints if available; otherwise a placeholder
+                el = item.get("element") or {}
+                loc = item.get("locators") or {}
+                hint = ""
+                try:
+                    if isinstance(el, dict):
+                        hint = el.get("name") or el.get("title") or ""
+                    if not hint and isinstance(loc, dict):
+                        hint = loc.get("name") or loc.get("title") or ""
+                except Exception:
+                    hint = ""
+                placeholder = f"Note: {hint}" if hint else "Note: Recorded step (no action/navigation)"
+                parts = [placeholder]
+            lines.append(f"{step_no}. " + " | ".join(parts))
+        # Default: do not truncate preview steps. Allow optional cap via env PREVIEW_MAX_STEPS.
+        try:
+            from os import getenv as _getenv
+            limit_raw = _getenv("PREVIEW_MAX_STEPS")
+            limit: Optional[int]
+            if limit_raw is None or str(limit_raw).strip() == "":
+                limit = None  # unlimited by default
+            else:
+                lowered = str(limit_raw).strip().lower()
+                if lowered in {"all", "unlimited", "none"}:
+                    limit = None
+                else:
+                    n = int(lowered)
+                    limit = None if n <= 0 else n
+        except Exception:
+            limit = None
+        return "\n".join(lines if limit is None else lines[: max(1, limit)])
 
     def _fetch_scaffold_snippet(self, scenario: str, limit: int = 3, max_chars: int = 1500) -> str:
         try:
@@ -1426,8 +1584,14 @@ class AgenticScriptAgent:
             page_lines.append('  }')
 
         if data_bindings:
+            # Track occurrences of each data key
+            from collections import defaultdict
+            key_occurrences: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+            for binding in data_bindings:
+                key_occurrences[binding['data_key']].append(binding)
+            
             page_lines.append('')
-            page_lines.append('  async applyData(formData: Record<string, any> | null | undefined, keys?: string[]): Promise<void> {')
+            page_lines.append('  async applyData(formData: Record<string, any> | null | undefined, keys?: string[], index: number = 0): Promise<void> {')
             page_lines.append('    const fallbackValues: Record<string, string> = {')
             for data_key, fallback in fallback_map.items():
                 page_lines.append(f"      {json.dumps(data_key)}: {json.dumps(fallback or '')},")
@@ -1439,12 +1603,29 @@ class AgenticScriptAgent:
             page_lines.append('      }')
             page_lines.append('      return targetKeys.includes(this.normaliseDataKey(key));')
             page_lines.append('    };')
-            for binding in data_bindings:
-                data_key = binding['data_key']
-                method_name = binding['method_name']
-                page_lines.append(f"    if (shouldHandle({json.dumps(data_key)})) {{")
-                page_lines.append(f"      await this.{method_name}(this.resolveDataValue(formData, {json.dumps(data_key)}, fallbackValues[{json.dumps(data_key)}] ?? ''));")
-                page_lines.append('    }')
+            
+            # Generate if blocks with index tracking for duplicate keys
+            for data_key, bindings_list in key_occurrences.items():
+                if len(bindings_list) == 1:
+                    # Single occurrence - no index needed
+                    binding = bindings_list[0]
+                    method_name = binding['method_name']
+                    page_lines.append(f"    if (shouldHandle({json.dumps(data_key)})) {{")
+                    page_lines.append(f"      await this.{method_name}(this.resolveDataValue(formData, {json.dumps(data_key)}, fallbackValues[{json.dumps(data_key)}] ?? ''));")
+                    page_lines.append('    }')
+                else:
+                    # Multiple occurrences - use index to select which one
+                    page_lines.append(f"    if (shouldHandle({json.dumps(data_key)})) {{")
+                    page_lines.append(f"      const value = this.resolveDataValue(formData, {json.dumps(data_key)}, fallbackValues[{json.dumps(data_key)}] ?? '');")
+                    for idx, binding in enumerate(bindings_list):
+                        method_name = binding['method_name']
+                        if idx == 0:
+                            page_lines.append(f"      if (index === {idx}) {{")
+                        else:
+                            page_lines.append(f"      }} else if (index === {idx}) {{")
+                        page_lines.append(f"        await this.{method_name}(value);")
+                    page_lines.append('      }')
+                    page_lines.append('    }')
             page_lines.append('  }')
 
         page_lines.append('}')
@@ -1509,7 +1690,10 @@ class AgenticScriptAgent:
             "    const defaultIdColumn = `${defaultDataStem}ID`;",
             "    const defaultReferenceId = `${defaultDataStem}001`;",
             "    const dataSheetName = String(testRow?.['DatasheetName'] ?? '').trim() || defaultDatasheetName;",
-            "    const dataReferenceId = String(testRow?.['ReferenceID'] ?? '').trim() || defaultReferenceId;",
+            "    const envReferenceId = (process.env.REFERENCE_ID || process.env.DATA_REFERENCE_ID || '').trim();",
+            "    const excelReferenceId = String(testRow?.['ReferenceID'] ?? '').trim() || defaultReferenceId;",
+            "    const dataReferenceId = envReferenceId || excelReferenceId;",
+            "    console.log(`[ReferenceID] Using: ${dataReferenceId} (source: ${envReferenceId ? 'env' : 'excel'})`);",
             "    const dataIdColumn = String(testRow?.['IDName'] ?? '').trim() || defaultIdColumn;",
             "    const dataSheetTab = String(testRow?.['SheetName'] ?? testRow?.['Sheet'] ?? '').trim();",
             "    const dataDir = path.join(__dirname, '../data');",
@@ -1578,7 +1762,7 @@ class AgenticScriptAgent:
         login_step_emitted = False
         has_data_bindings = bool(data_bindings)
 
-        for idx, ref in enumerate(step_refs, start=1):
+        for idx, ref in enumerate(step_refs):
             raw = ref.get('raw') or {}
             note = raw.get('navigation') or raw.get('action') or raw.get('expected') or f'Step {idx}'
             step_title = json.dumps(f'Step {idx} - {note}')
@@ -1616,7 +1800,10 @@ class AgenticScriptAgent:
 
             if has_data_bindings and ref.get('data_key'):
                 keys_literal = json.dumps([ref['data_key']])
-                spec_lines.append(f'      await {page_var}.applyData(dataRow, {keys_literal});')
+                # Track which occurrence of this data key we're at
+                data_key = ref['data_key']
+                occurrence_index = sum(1 for prev_ref in step_refs[:idx] if prev_ref.get('data_key') == data_key)
+                spec_lines.append(f'      await {page_var}.applyData(dataRow, {keys_literal}, {occurrence_index});')
             elif key and any(token in action for token in ['fill', 'type', 'enter']):
                 spec_lines.append(f'      await {locator_expr}.fill({data_expr});')
             elif key and 'select' in action:

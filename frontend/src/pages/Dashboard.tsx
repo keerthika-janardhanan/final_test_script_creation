@@ -4,7 +4,7 @@ import axios from 'axios';
 import { toast, Toaster } from 'sonner';
 import { useAuth } from '../hooks/useAuth';
 
-const API_BASE = 'http://localhost:8000/api';
+const API_BASE = 'http://localhost:8001/api';
 
 interface FormData {
   url: string;

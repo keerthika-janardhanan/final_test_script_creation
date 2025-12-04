@@ -158,7 +158,7 @@ _load_env_files()
 app = FastAPI(title="Test Artifact Backend", version="0.2.0")
 
 # CORS for local React dev server; adjust via env ALLOW_ORIGINS if needed
-allow_origins = os.getenv("ALLOW_ORIGINS", "http://localhost:5173").split(",")
+allow_origins = os.getenv("ALLOW_ORIGINS", "http://localhost:5178").split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in allow_origins if o.strip()],
@@ -477,6 +477,6 @@ if __name__ == "__main__":
     import uvicorn
 
     host = os.getenv("API_HOST", "0.0.0.0")
-    port = int(os.getenv("API_PORT", "8000"))
+    port = int(os.getenv("API_PORT", "8001"))
     uvicorn.run("app.api.main:app", host=host, port=port, reload=False)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Depends
+import shutil
 import logging
 from pydantic import BaseModel, Field
 from ..auth import jwt_required
@@ -11,6 +12,11 @@ from starlette.responses import StreamingResponse
 from typing import AsyncGenerator
 import re
 from ...trial_spec_adapter import trial_env_overrides
+from ...services.config_service import find_test_manager_path as _find_tm
+try:
+    from openpyxl import load_workbook  # type: ignore
+except Exception:  # pragma: no cover
+    load_workbook = None  # type: ignore
 
 
 router = APIRouter(prefix="/agentic", tags=["agentic"])
@@ -261,6 +267,7 @@ class TrialRunRequest(BaseModel):
     updateTestManager: bool = Field(False, description="If true and scenario provided, set Execute='Yes' and update datasheet mapping")
     datasheet: str | None = Field(None, description="Datasheet file name to write into testmanager.xlsx (optional)")
     referenceId: str | None = Field(None, description="ReferenceID value to write into testmanager.xlsx (optional)")
+    referenceIds: list[str] | None = Field(None, description="Optional list of ReferenceIDs to run sequentially (max 3) for generated streaming runs. If provided, takes precedence over referenceId.")
     idName: str | None = Field(None, description="IDName (column name) to write into testmanager.xlsx (optional)")
 
 
@@ -360,6 +367,13 @@ async def trial_run(req: TrialRunRequest) -> TrialRunResponse:
             pw = env_overrides.get("PASSWORD") or env_overrides.get("TRIAL_PASSWORD") or ""
             base = env_overrides.get("BASE_URL") or env_overrides.get("URL") or env_overrides.get("TRIAL_BASE_URL") or env_overrides.get("TRIAL_URL") or ""
             banner = "[trial-creds] username=" + (user or "<empty>") + ", password=" + _mask_pw(pw) + (", base_url=" + base if base else "") + "\n"
+            # Best-effort clean previous results to avoid artifact collisions
+            try:
+                results_dir = root / 'test-results'
+                if results_dir.exists():
+                    shutil.rmtree(results_dir, ignore_errors=True)
+            except Exception:
+                pass
             success, logs = run_trial_in_framework(content, root, headed=req.headed, env_overrides=env_overrides)
             logger.info(banner.strip())
             logs = banner + logs
@@ -400,7 +414,8 @@ class TrialRunExistingRequest(BaseModel):
     scenario: str | None = Field(None, description="Scenario/TestCase identifier to enable in testmanager.xlsx")
     updateTestManager: bool = Field(False, description="If true and scenario provided, set Execute='Yes' and update datasheet mapping")
     datasheet: str | None = Field(None, description="Datasheet file name to write into testmanager.xlsx (optional)")
-    referenceId: str | None = Field(None, description="ReferenceID value to write into testmanager.xlsx (optional)")
+    referenceId: str | None = Field(None, description="ReferenceID value to write into testmanager.xlsx (optional). Supports comma-separated for parallel runs.")
+    referenceIds: list[str] | None = Field(None, description="Optional list of ReferenceIDs to run in parallel (max 3). If provided, takes precedence over referenceId.")
     idName: str | None = Field(None, description="IDName (column name) to write into testmanager.xlsx (optional)")
 
 
@@ -436,7 +451,8 @@ async def trial_run_existing(req: TrialRunExistingRequest) -> TrialRunResponse:
                 execute_value="Yes",
                 create_if_missing=True,
                 datasheet=(req.datasheet or None),
-                reference_id=(req.referenceId or None),
+                # If multiple reference IDs supplied, don't persist a specific one into Excel to avoid races
+                reference_id=(None if (req.referenceIds and len(req.referenceIds) > 1) else (req.referenceId or None)),
                 id_name=(req.idName or None),
             )
             logger.info(f"[TrialRunExisting] TestManager update result: {upd_info}")
@@ -462,6 +478,16 @@ async def trial_run_existing(req: TrialRunExistingRequest) -> TrialRunResponse:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed reading file: {exc}") from exc
     
+    # Adapt content for trial (disable tracing, isolate outputs, env-driven overrides)
+    try:
+        from ...trial_spec_adapter import adapt_spec_content_for_trial
+        adapted_content, was_adapted = adapt_spec_content_for_trial(content, root)
+        if was_adapted:
+            content = adapted_content
+            logger.info("[TrialRunExisting] Applied trial spec adaptations (trace off, outputDir isolation, env overrides)")
+    except Exception as _adapt_exc:
+        logger.warning(f"[TrialRunExisting] Spec adaptation skipped due to error: {_adapt_exc}")
+
     env_overrides = trial_env_overrides(root, case_id=(req.scenario or None), spec_path=target)
     
     def _mask_pw(pw: str | None) -> str:
@@ -480,68 +506,145 @@ async def trial_run_existing(req: TrialRunExistingRequest) -> TrialRunResponse:
     # The test code will access them via process.env.USERID, process.env.PASSWORD, etc.
     logger.info(f"[TrialRunExisting] Injecting trial credentials into environment")
     logger.info(f"[TrialRunExisting] Credentials: USERID={user[:20] if user else '<empty>'}, PASSWORD={'***' if pw else '<empty>'}, BASE_URL={base[:30] if base else '<empty>'}")
-    
-    # Run the actual file directly using npx playwright test
-    import subprocess
-    import os
-    import platform
-    
-    relative_path = target.relative_to(root)
-    is_windows = platform.system() == "Windows"
-    
-    if is_windows:
-        # On Windows, convert backslashes to forward slashes for Playwright
-        # Playwright expects forward slashes even on Windows
-        path_for_cmd = str(relative_path).replace('\\', '/')
-        cmd_str = f'npx playwright test {path_for_cmd} --reporter=line'
-        if req.headed:
-            cmd_str += ' --headed'
-        cmd = cmd_str
-        use_shell = True
-    else:
-        # On Unix, use list format
-        cmd = ["npx", "playwright", "test", str(relative_path), "--reporter=line"]
-        if req.headed:
-            cmd.append("--headed")
-        use_shell = False
-    
-    logger.info(f"[TrialRunExisting] Running existing test file: {relative_path}")
-    logger.info(f"[TrialRunExisting] Command: {cmd if isinstance(cmd, str) else ' '.join(cmd)}")
-    logger.info(f"[TrialRunExisting] CWD: {root}")
-    logger.info(f"[TrialRunExisting] Shell mode: {use_shell}")
-    
-    # Merge environment variables - credentials will be available via process.env
-    env = os.environ.copy()
-    env.update(env_overrides)
-    
+    # Best-effort clean previous results to avoid artifact collisions across sequential/parallel runs
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=str(root),
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='replace',
-            timeout=300,
-            shell=use_shell
-        )
-        
-        # Safely concatenate strings, handling None values
-        stdout = result.stdout or ''
-        stderr = result.stderr or ''
-        logs = banner + stdout + stderr
-        success = result.returncode == 0
-        
-        logger.info(f"[TrialRunExisting] Exit code: {result.returncode}")
-        logger.info(f"[TrialRunExisting] Success: {success}")
-        
-        return TrialRunResponse(success=success, logs=logs, updateInfo=upd_info)
-    except subprocess.TimeoutExpired:
-        return TrialRunResponse(success=False, logs=banner + "Test execution timed out after 5 minutes", updateInfo=upd_info)
-    except Exception as exec_exc:
-        logger.error(f"[TrialRunExisting] Execution failed: {exec_exc}", exc_info=True)
-        return TrialRunResponse(success=False, logs=banner + f"Execution error: {exec_exc}", updateInfo=upd_info)
+        results_dir = root / 'test-results'
+        if results_dir.exists():
+            shutil.rmtree(results_dir, ignore_errors=True)
+            logger.info(f"[TrialRunExisting] Cleaned previous results at {results_dir}")
+    except Exception as _cleanup_exc:
+        logger.warning(f"[TrialRunExisting] Failed to clean test-results: {_cleanup_exc}")
+    
+    # Prepare trial execution using temp-spec runner so we can unskip tests
+    import os
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    try:
+        from ...executor import run_trial_in_framework  # temp spec inside framework tests dir
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"Import failure: {exc}") from exc
+    # Unskip tests for trial-only execution
+    content, replaced = _unskip_tests_for_trial(content)
+
+    # Helper: read ReferenceID/IDName from testmanager.xlsx for the provided scenario
+    def _read_refs_from_excel(root_path, scenario: str) -> tuple[str | None, str | None]:
+        try:
+            if not scenario:
+                return None, None
+            tm = _find_tm(root_path)
+            if not tm or not load_workbook:
+                return None, None
+            wb = load_workbook(tm)
+            ws = wb.active
+            header = [str(c.value or "").strip() for c in ws[1]] if ws.max_row >= 1 else []
+            def _idx(name: str) -> int | None:
+                lname = name.lower()
+                for i, h in enumerate(header):
+                    if lname == h.lower() or lname in h.lower():
+                        return i
+                return None
+            id_i = _idx("TestCaseID")
+            ref_i = _idx("ReferenceID")
+            name_i = _idx("IDName")
+            if id_i is None:
+                return None, None
+            for r in ws.iter_rows(min_row=2, values_only=True):
+                case_id = str((r[id_i] if id_i is not None and id_i < len(r) else "") or "").strip()
+                if not case_id:
+                    continue
+                if case_id.lower() == scenario.strip().lower():
+                    ref_val = str((r[ref_i] if ref_i is not None and ref_i < len(r) else "") or "").strip() if ref_i is not None else ""
+                    id_name_val = str((r[name_i] if name_i is not None and name_i < len(r) else "") or "").strip() if name_i is not None else ""
+                    return (ref_val or None), (id_name_val or None)
+        except Exception:
+            return None, None
+        return None, None
+
+    # Determine ReferenceIDs to run
+    ref_ids: list[str] = []
+    if req.referenceIds and isinstance(req.referenceIds, list) and len(req.referenceIds) > 0:
+        ref_ids = [str(r).strip() for r in req.referenceIds if str(r).strip()]
+    elif req.referenceId and "," in req.referenceId:
+        ref_ids = [r.strip() for r in (req.referenceId or "").split(",") if r.strip()]
+    elif req.referenceId:
+        ref_ids = [str(req.referenceId).strip()]
+
+    # If not provided via API, fall back to Excel row for the scenario
+    excel_ref_val: str | None = None
+    excel_idname: str | None = None
+    effective_id_name = req.idName
+    if not ref_ids and (req.scenario or "").strip():
+        excel_ref_val, excel_idname = _read_refs_from_excel(root, (req.scenario or "").strip())
+        if excel_ref_val:
+            # Support comma, semicolon, whitespace, and newline-separated values
+            import re as _re
+            parts = [p.strip() for p in _re.split(r"[,;\s]+", str(excel_ref_val)) if p and str(p).strip()]
+            if parts:
+                ref_ids = parts
+        if not effective_id_name and excel_idname:
+            effective_id_name = excel_idname
+    if not effective_id_name:
+        effective_id_name = req.idName
+
+    # If multiple reference IDs provided, run in parallel (max 3). Otherwise, single run.
+    if len(ref_ids) <= 1:
+        env = os.environ.copy()
+        env.update(env_overrides)
+        if ref_ids:
+            env.update({
+                "REFERENCE_ID": ref_ids[0],
+                "DATA_REFERENCE_ID": ref_ids[0],
+            })
+            if effective_id_name:
+                env.update({
+                    "ID_NAME": effective_id_name,
+                    "DATA_ID_NAME": effective_id_name,
+                })
+        success, logs = run_trial_in_framework(content, root, headed=req.headed, env_overrides=env)
+        logs = (f"[trial-note] Unskipped tests for this run.\n" if replaced else "") + banner + logs
+        return TrialRunResponse(success=bool(success), logs=logs, updateInfo=upd_info)
+
+    # Parallel path
+    max_workers = min(3, len(ref_ids))
+    logger.info(f"[TrialRunExisting] Running parallel executions for {len(ref_ids)} ReferenceIDs (max_workers={max_workers})")
+
+    def _run_for_ref(ref: str) -> tuple[str, bool, str]:
+        env = os.environ.copy()
+        env.update(env_overrides)
+        env.update({
+            "REFERENCE_ID": ref,
+            "DATA_REFERENCE_ID": ref,
+        })
+        if effective_id_name:
+            env.update({
+                "ID_NAME": effective_id_name,
+                "DATA_ID_NAME": effective_id_name,
+            })
+        try:
+            ok, logs = run_trial_in_framework(content, root, headed=req.headed, env_overrides=env)
+            combined = f"[reference:{ref}]\n" + ((f"[trial-note] Unskipped tests for this run.\n" if replaced else "") + banner + logs)
+            return ref, bool(ok), combined
+        except Exception as exec_exc:
+            logger.error(f"[TrialRunExisting] Parallel execution failed for {ref}: {exec_exc}", exc_info=True)
+            return ref, False, f"[reference:{ref}]\n" + banner + f"Execution error: {exec_exc}"
+
+    results: list[tuple[str, bool, str]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_run_for_ref, ref): ref for ref in ref_ids}
+        for fut in as_completed(futures):
+            try:
+                results.append(fut.result())
+            except Exception as e:  # pragma: no cover
+                r = futures[fut]
+                logger.error(f"[TrialRunExisting] Worker crashed for {r}: {e}")
+                results.append((r, False, f"[reference:{r}]\n" + banner + f"Execution error: {e}"))
+
+    # Summarize
+    results.sort(key=lambda t: ref_ids.index(t[0]))
+    all_success = all(s for (_, s, _) in results) if results else False
+    summary_lines = [f"{('PASS' if s else 'FAIL')} - {p}" for (p, s, _) in results]
+    combined_logs = "\n\n".join(log for (_, _, log) in results)
+    summary = "Parallel run summary (ReferenceIDs)\n" + "\n".join(summary_lines) + "\n\n" + combined_logs
+    return TrialRunResponse(success=all_success, logs=summary, updateInfo=upd_info)
 
 
 class KeywordInspectRequest(BaseModel):
@@ -786,10 +889,27 @@ async def keyword_inspect(req: KeywordInspectRequest) -> KeywordInspectResponse:
             if vector_steps:
                 vector_context.flowAvailable = True
                 vector_context.vectorStepsCount = len(vector_steps)
-                
+
+                # Default: return all refined steps. Allow optional cap via REFINED_FLOW_PREVIEW_MAX_STEPS.
+                try:
+                    import os as _os
+                    _limit_raw = _os.getenv("REFINED_FLOW_PREVIEW_MAX_STEPS")
+                    if _limit_raw is None or str(_limit_raw).strip() == "":
+                        _limit = None
+                    else:
+                        _raw = str(_limit_raw).strip().lower()
+                        if _raw in {"all", "unlimited", "none"}:
+                            _limit = None
+                        else:
+                            _n = int(_raw)
+                            _limit = None if _n <= 0 else _n
+                except Exception:
+                    _limit = None
+
+                _steps = vector_steps if _limit is None else vector_steps[: max(1, _limit)]
                 refined_flow = RefinedRecorderFlow(
                     sourceSession=context.get("session_id"),
-                    steps=vector_steps[:20],  # Limit to first 20 steps
+                    steps=_steps,
                     stabilityWarnings=[]
                 )
                 messages.append(f"Found refined recorder flow with {len(vector_steps)} steps")
@@ -849,6 +969,48 @@ async def trial_run_stream(req: TrialRunRequest) -> StreamingResponse:
             cwd = None
             cmd = None
             # If a frameworkRoot is specified, write inside its detected testDir so Playwright config applies.
+            # Helper: Excel fallback for ReferenceIDs if not provided
+            def _excel_refs(root_path, scenario: str) -> tuple[list[str], str | None]:
+                refs: list[str] = []
+                id_name: str | None = None
+                if not scenario or not load_workbook:
+                    return refs, id_name
+                try:
+                    tm = _find_tm(root_path)
+                    if not tm:
+                        return refs, id_name
+                    wb = load_workbook(tm)
+                    ws = wb.active
+                    header = [str(c.value or "").strip() for c in ws[1]] if ws.max_row >= 1 else []
+                    def _idx(name: str) -> int | None:
+                        lname = name.lower()
+                        for i, h in enumerate(header):
+                            if lname == h.lower() or lname in h.lower():
+                                return i
+                        return None
+                    id_i = _idx("TestCaseID")
+                    ref_i = _idx("ReferenceID")
+                    name_i = _idx("IDName")
+                    if id_i is None:
+                        return refs, id_name
+                    for r in ws.iter_rows(min_row=2, values_only=True):
+                        case_id = str((r[id_i] if id_i is not None and id_i < len(r) else "") or "").strip()
+                        if not case_id:
+                            continue
+                        if case_id.lower() == scenario.strip().lower():
+                            raw_ref = str((r[ref_i] if ref_i is not None and ref_i < len(r) else "") or "").strip()
+                            raw_name = str((r[name_i] if name_i is not None and name_i < len(r) else "") or "").strip()
+                            if raw_ref:
+                                import re as _re
+                                parts = [p.strip() for p in _re.split(r"[,;\s]+", raw_ref) if p.strip()]
+                                refs = parts
+                            if raw_name:
+                                id_name = raw_name
+                            break
+                except Exception:
+                    return refs, id_name
+                return refs, id_name
+
             if req.frameworkRoot:
                 logger.info(f"[TrialRunStream] Using frameworkRoot: {req.frameworkRoot}")
                 try:
@@ -907,30 +1069,113 @@ async def trial_run_stream(req: TrialRunRequest) -> StreamingResponse:
                     rel = tmp_path.replace('\\', '/')
                 logger.info(f"[TrialRunStream] Relative path: {rel}")
                 
-                # Load trial credentials and set as environment variables for the subprocess
-                trial_env = os.environ.copy()
-                env_overrides = trial_env_overrides(root)
-                if env_overrides:
-                    trial_env.update(env_overrides)
-                    logger.info(f"[TrialRunStream] Added trial environment overrides: {list(env_overrides.keys())}")
-                    print(f"[TrialRunStream] Trial credentials loaded from trial_run_config.json")
-                    print(f"[TrialRunStream] Environment variables set: {', '.join(env_overrides.keys())}")
-                
-                cmd, cwd = _resolve_playwright_command(rel, req.headed, project_root=root)
-                logger.info(f"[TrialRunStream] Command: {' '.join(cmd)}, CWD: {cwd}, Headed: {req.headed}")
-                yield _format_sse({"phase": "prepared", "headed": req.headed, "cmd": ' '.join(cmd), "cwd": cwd, "unskipped": replaced})
-                logger.info(f"[TrialRunStream] Starting subprocess with headed={req.headed}")
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    cwd=str(root),
-                    env=trial_env,  # Pass environment with trial credentials
-                )
-                logger.info(f"[TrialRunStream] Subprocess PID: {proc.pid}")
+                # Determine ReferenceIDs for sequential multi-run (max 3)
+                ref_ids: list[str] = []
+                if req.referenceIds:
+                    ref_ids = [r.strip() for r in req.referenceIds if r and str(r).strip()]
+                elif req.referenceId and "," in req.referenceId:
+                    ref_ids = [r.strip() for r in req.referenceId.split(",") if r.strip()]
+                elif req.referenceId:
+                    ref_ids = [req.referenceId.strip()]
+                elif req.scenario:
+                    excel_refs, excel_idname = _excel_refs(root, req.scenario)
+                    if excel_refs:
+                        ref_ids = excel_refs
+                    if not req.idName and excel_idname:
+                        req.idName = excel_idname
+                if len(ref_ids) > 3:
+                    ref_ids = ref_ids[:3]
+
+                # Cap to maximum of 3 parallel runs
+                if len(ref_ids) > 3:
+                    ref_ids = ref_ids[:3]
+                if not ref_ids:
+                    ref_ids = [""]  # single run with no REFERENCE_ID
+
+                # Launch separate browser process for each Reference ID
+                import threading, queue as _queue
+                base_env_overrides = trial_env_overrides(root)
+                cmd_cwd = _resolve_playwright_command(rel, req.headed, project_root=root)
+                base_cmd, base_cwd = cmd_cwd
+                yield _format_sse({"phase": "prepared-parallel", "runs": len(ref_ids), "cmd": ' '.join(base_cmd), "cwd": base_cwd, "unskipped": replaced})
+
+                events_q: _queue.Queue = _queue.Queue()
+                success_map: dict[str, bool] = {}
+                procs: list[tuple[str, subprocess.Popen]] = []
+
+                # Start separate process for each Reference ID
+                for idx, ref in enumerate(ref_ids):
+                    run_label = (ref or f"run-{idx+1}")
+                    trial_env = os.environ.copy()
+                    if base_env_overrides:
+                        trial_env.update(base_env_overrides)
+                    if ref:
+                        trial_env.update({
+                            "REFERENCE_ID": ref,
+                            "DATA_REFERENCE_ID": ref,
+                        })
+                    if req.idName:
+                        trial_env.update({
+                            "ID_NAME": req.idName,
+                            "DATA_ID_NAME": req.idName,
+                        })
+                    cmd, cwd = _resolve_playwright_command(rel, req.headed, project_root=root)
+                    logger.info(f"[TrialRunStream] Launching browser for {run_label}: {' '.join(cmd)}")
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        cwd=str(root),
+                        env=trial_env,
+                    )
+                    procs.append((run_label, proc))
+                    events_q.put({"phase": "running", "referenceId": run_label})
+
+                # Reader threads
+                def _reader(label: str, p: subprocess.Popen):
+                    try:
+                        if p.stdout is None:
+                            return
+                        for line in iter(p.stdout.readline, ''):
+                            if not line:
+                                break
+                            events_q.put({"phase": "chunk", "data": line.rstrip(), "referenceId": label})
+                    except Exception as _e:
+                        events_q.put({"phase": "chunk", "data": f"[reader-error] {label}: {_e}", "referenceId": label})
+                    finally:
+                        try:
+                            rc = p.wait()
+                            ok = (rc == 0)
+                        except Exception:
+                            ok = False
+                        success_map[label] = ok
+                        events_q.put({"phase": "done-single", "success": ok, "referenceId": label})
+
+                threads: list[threading.Thread] = []
+                for label, p in procs:
+                    t = threading.Thread(target=_reader, args=(label, p), daemon=True)
+                    t.start()
+                    threads.append(t)
+
+                # Pump queue to client until all done
+                done_needed = len(procs)
+                done_seen = 0
+                while done_seen < done_needed or not events_q.empty():
+                    try:
+                        evt = await asyncio.get_event_loop().run_in_executor(None, events_q.get, )
+                        if isinstance(evt, dict) and evt.get("phase"):
+                            if evt.get("phase") == "done-single":
+                                done_seen += 1
+                            yield _format_sse(evt)
+                    except Exception:
+                        await asyncio.sleep(0.05)
+
+                # Final summary
+                overall_success = all(success_map.get(lbl, False) for (lbl, _) in procs) if procs else False
+                yield _format_sse({"phase": "done", "success": overall_success, "runs": len(procs)})
             else:
                 logger.info("[TrialRunStream] No frameworkRoot - using system temp")
                 
@@ -965,6 +1210,7 @@ async def trial_run_stream(req: TrialRunRequest) -> StreamingResponse:
                 )
                 logger.info(f"[TrialRunStream] Subprocess PID: {proc.pid}")
 
+            # Single-run path for non-frameworkRoot
             yield _format_sse({"phase": "running"})
             logger.info("[TrialRunStream] Reading subprocess output...")
             assert proc.stdout is not None

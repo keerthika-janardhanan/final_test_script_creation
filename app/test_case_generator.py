@@ -1061,8 +1061,9 @@ class TestCaseGenerator:
         context_sources: List[str] = []
 
         vector_chunks, vector_steps = self._load_vector_flow(story)
-        if not vector_steps and self._ensure_vector_flow_ingested(story):
-            vector_chunks, vector_steps = self._load_vector_flow(story)
+        # Disable auto-ingestion - only use what's already in vector DB
+        # if not vector_steps and self._ensure_vector_flow_ingested(story):
+        #     vector_chunks, vector_steps = self._load_vector_flow(story)
 
         if vector_steps:
             matched_flow_steps = vector_steps

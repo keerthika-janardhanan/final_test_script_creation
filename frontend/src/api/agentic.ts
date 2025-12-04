@@ -94,7 +94,7 @@ export async function trialRunExisting(
   testFilePath: string,
   headed = true,
   frameworkRoot?: string,
-  options?: { scenario?: string; datasheet?: string; referenceId?: string; idName?: string; update?: boolean },
+  options?: { scenario?: string; datasheet?: string; referenceId?: string; referenceIds?: string[]; idName?: string; update?: boolean },
 ) {
   const { data } = await apiClient.post<{ success: boolean; logs: string; updateInfo?: any }>(
     "/agentic/trial-run-existing",
@@ -106,6 +106,7 @@ export async function trialRunExisting(
       updateTestManager: options?.update ?? false,
       datasheet: options?.datasheet,
       referenceId: options?.referenceId,
+      referenceIds: options?.referenceIds,
       idName: options?.idName,
     },
   );
@@ -119,7 +120,7 @@ export async function trialRunAgenticStream(
   token: string | undefined,
   onEvent: (evt: any) => void,
   signal?: AbortSignal,
-  options?: { scenario?: string; datasheet?: string; referenceId?: string; idName?: string; update?: boolean },
+  options?: { scenario?: string; datasheet?: string; referenceId?: string; referenceIds?: string[]; idName?: string; update?: boolean },
 ) {
   const url = `${API_BASE_URL}/agentic/trial-run/stream`;
   
@@ -144,6 +145,7 @@ export async function trialRunAgenticStream(
       updateTestManager: options?.update ?? false,
       datasheet: options?.datasheet,
       referenceId: options?.referenceId,
+      referenceIds: options?.referenceIds,
       idName: options?.idName,
     },
     onEvent: (evt) => {
@@ -188,7 +190,6 @@ export async function uploadDatasheet(
   );
   return data;
 }
-
 export async function listDatasheets(frameworkRoot?: string) {
   const { data } = await apiClient.get<{ files: string[] }>(
     "/config/list_datasheets",

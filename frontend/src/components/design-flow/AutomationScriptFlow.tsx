@@ -101,7 +101,7 @@ export const AutomationScriptFlow: React.FC<AutomationScriptFlowProps> = ({
   const handleGeneratePayload = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch('http://localhost:8000/api/automation/generate-payload', {
+      const response = await fetch('http://localhost:8001/api/automation/generate-payload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -202,7 +202,7 @@ export const AutomationScriptFlow: React.FC<AutomationScriptFlowProps> = ({
     setIsLoading(true);
 
     try {
-      await fetch('http://localhost:8000/api/automation/push', {
+      await fetch('http://localhost:8001/api/automation/push', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -19,7 +19,7 @@ export const ManualTestCaseFlow: React.FC<ManualTestCaseFlowProps> = ({
 
     try {
       // Call existing manual test case generation API
-      const response = await fetch('http://localhost:8000/api/manual-test-cases/generate', {
+      const response = await fetch('http://localhost:8001/api/manual-test-cases/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

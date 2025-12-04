@@ -90,7 +90,8 @@ export function ManualTestsPage() {
           </FormControl>
           <FormControl>
             <FormLabel>Reference ID</FormLabel>
-            <Input value={referenceId} onChange={(e) => setReferenceId(e.target.value)} placeholder="CreateSupplier001" />
+            <Input value={referenceId} onChange={(e) => setReferenceId(e.target.value)} placeholder="CreateSupplier001, CreateSupplier002 (comma-separated, max 3)" />
+            <Text mt={1} fontSize="sm" color="gray.500">You can provide multiple Reference IDs separated by commas (up to 3). Leave blank to keep existing Excel value.</Text>
           </FormControl>
           <FormControl>
             <FormLabel>ID Column Name</FormLabel>

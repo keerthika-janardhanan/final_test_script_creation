@@ -123,8 +123,11 @@ PAGE_INJECT_SCRIPT = """
         if (r && n) return `getByRole(\"${r}\", { name: \"${n.replace(/\"/g,'\\\"')}\" })`;
         // Prefer label
         const labs = labelTexts(el); if (labs && labs.length){ const l=labs[0].replace(/\"/g,'\\\"'); return `getByLabel(\"${l}\")`; }
-        // Fallback to text
-        const t = (el.innerText||el.textContent||'').trim(); if (t) return `getByText(\"${t.slice(0,80).replace(/\"/g,'\\\"')}\")`;
+        // Fallback to text (avoid root HTML/BODY and prefer innerText only)
+        const tag = (el && el.tagName ? el.tagName.toLowerCase() : '');
+        if (tag !== 'html' && tag !== 'body') {
+            const t = (el.innerText || '').trim(); if (t) return `getByText(\"${t.slice(0,80).replace(/\"/g,'\\\"')}\")`;
+        }
         // Fallback to CSS path then XPath
         const cssp = cssPath(el); if (cssp) return cssp;
         return xp(el);
@@ -257,7 +260,9 @@ PAGE_INJECT_SCRIPT = """
             rect: r?{x:r.x,y:r.y,width:r.width,height:r.height}:null,
         };
         element.stableSelector = makeStableSelector(el);
-        element.playwright = { byRole: (role && name) ? { role, name } : null, byLabel: (labels[0]||'') || null, byText: ((el.innerText||el.textContent||'').trim().slice(0,80)) || null };
+        const tag = (el && el.tagName ? el.tagName.toLowerCase() : '');
+        const byTextVal = tag === 'html' || tag === 'body' ? '' : ((el.innerText || '').trim().slice(0,80));
+        element.playwright = { byRole: (role && name) ? { role, name } : null, byLabel: (labels[0]||'') || null, byText: (byTextVal || null) };
         return element;
     };
     const send = (action, target, extra) => {
@@ -873,6 +878,24 @@ def main() -> None:
         if not args.no_har:
             har_path = session_dir / "network.har"
 
+        # Build browser launch args
+        launch_args_list: Optional[List[str]] = None
+        try:
+            tmp: List[str] = []
+            if args.disable_gpu and args.browser == "chromium":
+                tmp += ["--disable-gpu", "--disable-software-rasterizer"]
+            if args.bypass_csp and args.browser == "chromium":
+                tmp += [
+                    "--disable-web-security",
+                    "--disable-site-isolation-trials",
+                    "--disable-features=IsolateOrigins,site-per-process",
+                    "--allow-running-insecure-content",
+                    "--ignore-certificate-errors",
+                ]
+            launch_args_list = tmp if tmp else None
+        except Exception:
+            launch_args_list = None
+
         context = _build_context(
             playwright=playwright,
             browser_name=args.browser,
@@ -882,7 +905,7 @@ def main() -> None:
             ignore_https_errors=args.ignore_https_errors,
             user_agent=args.user_agent,
             proxy_server=args.proxy,
-            launch_args=["--disable-gpu", "--disable-software-rasterizer"] if args.disable_gpu and args.browser == "chromium" else None,
+            launch_args=launch_args_list,
             bypass_csp=args.bypass_csp,
         )
         browser = context.browser

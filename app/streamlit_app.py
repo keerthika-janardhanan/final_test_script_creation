@@ -945,137 +945,20 @@ def execute_trial_run(
     scenario_hint: str = "",
     headed: bool = False,
 ) -> List[Dict[str, str]]:
-    scenario_text = state.get("scenario") or scenario_hint
-    scenario_text = scenario_text.strip()
-    if not scenario_text:
-        return [
-            {
-                "role": "assistant",
-                "content": "No scenario in context. Generate or specify a script before running a trial.",
-                "type": "text",
-            }
-        ]
-
-    responses: List[Dict[str, str]] = []
-    test_paths: List[Path] = []
-    payload = state.get("payload")
-
-    if payload:
-        if not state.get("written_files"):
-            try:
-                written_paths = agentic_engine.persist_payload(framework, payload)
-            except Exception as exc:  # noqa: BLE001
-                return [
-                    {
-                        "role": "assistant",
-                        "content": f"Failed to persist generated files before trial run: {exc}",
-                        "type": "text",
-                    }
-                ]
-            state["written_files"] = [str(path.relative_to(framework.root)) for path in written_paths]
-        for file_obj in payload.get("tests", []):
-            rel = file_obj.get("path")
-            if not rel:
-                continue
-            spec_path = (framework.root / rel).resolve()
-            if spec_path.exists() and spec_path.name.endswith(".spec.ts"):
-                test_paths.append(spec_path)
-
-    if not test_paths:
-        existing_files = state.get("existing_files", [])
-        if not existing_files:
-            repo_assets = agentic_engine.find_existing_framework_assets(scenario_text, framework)
-            existing_files = [
-                str(asset["path"].relative_to(framework.root)) for asset in repo_assets if asset.get("path")
-            ]
-            if existing_files:
-                state["existing_files"] = existing_files
-        for rel in existing_files:
-            spec_path = (framework.root / rel).resolve()
-            if spec_path.exists() and spec_path.name.endswith(".spec.ts"):
-                test_paths.append(spec_path)
-
-    if not test_paths:
-        state["last_trial_status"] = "skipped"
-        return [
-            {
-                "role": "assistant",
-                "content": "No Playwright spec files available for a trial run. Generate a script or specify a test file first.",
-                "type": "text",
-            }
-        ]
-    config_paths = state.get("updated_configs", [])
-    if config_paths:
-        state.setdefault("written_files", [])
-        for rel in config_paths:
-            if rel not in state["written_files"]:
-                state["written_files"].append(rel)
-
-    unique_paths: List[Path] = []
-    seen = set()
-    for spec_path in test_paths:
-        try:
-            rel = spec_path.relative_to(framework.root)
-        except ValueError:
-            rel = spec_path
-        if str(rel) in seen:
-            continue
-        seen.add(str(rel))
-        unique_paths.append(spec_path)
-
-    max_specs = 3
-    results_summary: List[str] = []
-    detailed_logs: List[Dict[str, str]] = []
-    state.setdefault("trial_results", [])
-    for index, spec_path in enumerate(unique_paths):
-        if index >= max_specs:
-            break
-        rel_path = spec_path.relative_to(framework.root)
-        success, logs = run_spec_file(rel_path, framework.root, headed=headed)
-        status = "PASS" if success else "FAIL"
-        results_summary.append(f"{status} - {rel_path}")
-        truncated_logs = logs if len(logs) <= 2000 else logs[:2000] + "\n... (truncated)"
-        detailed_logs.append(
-            {
-                "path": str(rel_path),
-                "status": status,
-                "logs": truncated_logs or "(no output)",
-            }
-        )
-        state["trial_results"].append(
-            {"path": str(rel_path), "status": status.lower(), "logs": logs}
-        )
-
-    all_success = bool(detailed_logs) and all(entry["status"] == "PASS" for entry in detailed_logs)
-    if detailed_logs:
-        state["last_trial_status"] = "pass" if all_success else "fail"
-    else:
-        state["last_trial_status"] = "skipped"
-    state["last_trial_mode"] = "headed" if headed else "headless"
-
-    if len(unique_paths) > max_specs:
-        remaining = len(unique_paths) - max_specs
-        results_summary.append(f"... Skipped {remaining} additional spec(s); re-run with a narrower request if needed.")
-
-    header = "Trial run summary"
-    if headed:
-        header += " (headed mode)"
-    responses.append(
+    # Deprecated: Streamlit trial path is disabled. Use FastAPI route instead.
+    state["last_trial_status"] = "skipped"
+    state["last_trial_mode"] = "headless"
+    return [
         {
             "role": "assistant",
-            "content": header + "\n" + "\n".join(results_summary),
+            "content": (
+                "Trial run via Streamlit is disabled. "
+                "Please call the FastAPI endpoint POST /agentic/trial-run-existing "
+                "to execute trials (supports unskip and parallel ReferenceIDs)."
+            ),
             "type": "text",
         }
-    )
-    for entry in detailed_logs:
-        responses.append(
-            {
-                "role": "assistant",
-                "content": f"{entry['status']} - {entry['path']}\n```\n{entry['logs']}\n```",
-                "type": "text",
-            }
-        )
-    return responses
+    ]
 
 
 # -------------------------- Admin Panel --------------------------

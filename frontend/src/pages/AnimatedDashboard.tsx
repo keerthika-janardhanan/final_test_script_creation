@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import "../styles/animated-dashboard.css";
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8001";
 const API = `${BACKEND_URL}/api`;
 
 // Workflow states

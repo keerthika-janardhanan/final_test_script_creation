@@ -1,7 +1,7 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from '@playwright/test';
 
-const API_BASE = process.env.API_BASE ?? "http://localhost:8000";
-const APP_BASE = process.env.APP_BASE ?? "http://localhost:5173";
+const API_BASE = process.env.API_BASE ?? "http://localhost:8001";
+const APP_BASE = process.env.APP_BASE ?? "http://localhost:5178";
 
 async function waitForJob(page, jobId: string) {
   await test.step(`poll job ${jobId}`, async () => {

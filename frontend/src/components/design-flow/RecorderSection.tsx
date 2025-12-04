@@ -22,7 +22,7 @@ export const RecorderSection: React.FC<RecorderSectionProps> = ({ onComplete }) 
 
     try {
       // Call the existing recorder API
-      const response = await fetch('http://localhost:8000/api/recorder/start', {
+      const response = await fetch('http://localhost:8001/api/recorder/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -50,7 +50,7 @@ export const RecorderSection: React.FC<RecorderSectionProps> = ({ onComplete }) 
 
     try {
       // Call the existing ingest API
-      const response = await fetch('http://localhost:8000/api/ingest/recordings', {
+      const response = await fetch('http://localhost:8001/api/ingest/recordings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

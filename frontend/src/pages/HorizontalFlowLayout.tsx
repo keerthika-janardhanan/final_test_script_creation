@@ -980,6 +980,12 @@ ${refinedFlowSteps.map((step: any, idx: number) => {
       if (isExistingScript) {
         // For existing scripts, use the trial-run-existing endpoint
         console.log('[TrialRun] ✅ USING EXISTING SCRIPT ENDPOINT at path:', payloadFiles[0].path);
+        // Parse Reference IDs for parallel runs (comma-separated, max 3)
+        const parsedIds = (referenceId || '')
+          .split(',')
+          .map(s => s.trim())
+          .filter(Boolean)
+          .slice(0, 3);
         
         const response = await fetch(`${API_BASE_URL}/agentic/trial-run-existing`, {
           method: 'POST',
@@ -989,7 +995,12 @@ ${refinedFlowSteps.map((step: any, idx: number) => {
             frameworkRoot: frameworkRoot,
             headed: true,
             scenario: testCaseId || testKeyword || sessionName || '',
-            updateTestManager: true
+            updateTestManager: true,
+            // Prefer explicit IDs from UI; backend will fallback to Excel if omitted
+            referenceIds: parsedIds.length > 1 ? parsedIds : undefined,
+            referenceId: parsedIds.length === 1 ? parsedIds[0] : undefined,
+            idName: idName || undefined,
+            datasheet: datasheetName || undefined
           })
         });
         
@@ -1044,6 +1055,12 @@ ${refinedFlowSteps.map((step: any, idx: number) => {
       }
       
       // Use streaming trial run for real-time logs
+      // Parse Reference IDs for sequential multi-run streaming (max 3)
+      const generatedParsedIds = (referenceId || '')
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean)
+        .slice(0, 3);
       await trialRunAgenticStream(
         testFile.content,
         true, // headed mode - show browser
@@ -1052,10 +1069,11 @@ ${refinedFlowSteps.map((step: any, idx: number) => {
         (event: any) => {
           console.log('[TrialRun] Event:', event);
           const phase = event.phase || event.type;
+          const label = event.referenceId ? `[${event.referenceId}] ` : '';
           
           if (phase === 'chunk' || phase === 'log' || phase === 'progress') {
             const message = event.data || event.message || '';
-            setTrialLogs(prev => prev + message + '\n');
+            setTrialLogs(prev => prev + label + message + '\n');
           } else if (phase === 'done' || phase === 'complete') {
             const success = event.success !== false;
             setTrialResult({
@@ -1066,7 +1084,7 @@ ${refinedFlowSteps.map((step: any, idx: number) => {
             setTrialRunning(false);
           } else if (phase === 'error') {
             const errorMsg = event.error || event.message || 'Unknown error';
-            setTrialLogs(prev => prev + `ERROR: ${errorMsg}\n`);
+            setTrialLogs(prev => prev + `${label}ERROR: ${errorMsg}\n`);
             setTrialResult({
               success: false,
               message: errorMsg,
@@ -1077,18 +1095,28 @@ ${refinedFlowSteps.map((step: any, idx: number) => {
             // Show command being run
             const cmd = event.cmd || '';
             const cwd = event.cwd || '';
-            setTrialLogs(prev => prev + `Command: ${cmd}\nWorking directory: ${cwd}\nHeaded mode: ${event.headed}\n\n`);
+            setTrialLogs(prev => prev + `${label}Command: ${cmd}\n${label}Working directory: ${cwd}\n${label}Headed mode: ${event.headed}\n\n`);
+          } else if (phase === 'prepared-parallel') {
+            const cmd = event.cmd || '';
+            const cwd = event.cwd || '';
+            setTrialLogs(prev => prev + `Launching ${event.runs || 0} parallel run(s)\nCommand: ${cmd}\nWorking directory: ${cwd}\nHeaded mode: ${event.headed}\n\n`);
           } else if (phase === 'running') {
-            setTrialLogs(prev => prev + 'Playwright test execution started...\n');
+            setTrialLogs(prev => prev + `${label}Playwright test execution started...\n`);
           }
         },
         undefined, // signal
-        {
+        generatedParsedIds.length > 1 ? {
           scenario: testCaseId || testCaseDescription,
           datasheet: datasheetName,
-          referenceId: referenceId,
+          referenceIds: generatedParsedIds,
           idName: idName,
-          update: true // Update testmanager with results
+          update: true
+        } : {
+          scenario: testCaseId || testCaseDescription,
+          datasheet: datasheetName,
+          referenceId: generatedParsedIds[0] || referenceId,
+          idName: idName,
+          update: true
         }
       );
       
@@ -3144,7 +3172,17 @@ ${refinedFlowSteps.map((step: any, idx: number) => {
                       </div>
                       <div className="text-right">
                         <p className="text-purple-200 text-sm">Total Steps</p>
-                        <p className="text-white text-2xl font-bold">{refinedFlowSteps.length}</p>
+                        {(() => {
+                          const previewCount = (editableFlowPreview || '')
+                            .split('\n')
+                            .filter(line => /^\s*\d+\./.test(line))
+                            .length;
+                          const vectorCount = Array.isArray(refinedFlowSteps) ? refinedFlowSteps.length : 0;
+                          const total = Math.max(vectorCount, previewCount);
+                          return (
+                            <p className="text-white text-2xl font-bold">{total}</p>
+                          );
+                        })()}
                       </div>
                     </div>
                   </div>
@@ -3484,18 +3522,21 @@ ${refinedFlowSteps.map((step: any, idx: number) => {
                     </select>
                   </div>
                   
-                  {/* Reference ID */}
+                  {/* Reference ID(s) */}
                   <div className="mb-6">
                     <label className="block text-orange-200 mb-2 text-lg font-semibold">
-                      Reference ID (Optional)
+                      Reference ID(s) (Optional)
                     </label>
                     <input
                       type="text"
                       value={referenceId}
                       onChange={(e) => setReferenceId(e.target.value)}
-                      placeholder="e.g., REF_001, JIRA-123"
+                      placeholder="e.g., REF_001, JIRA-123 (comma-separated, max 3)"
                       className="w-full px-4 py-3 bg-black/30 border-2 border-orange-400/30 rounded-lg text-white placeholder-white/40 focus:border-orange-400 focus:outline-none"
                     />
+                    <p className="mt-2 text-orange-300/60 text-sm">
+                      Tip: Enter multiple values separated by commas to run in parallel (up to 3). Leave blank to use the Excel value.
+                    </p>
                   </div>
                   
                   {/* ID Name */}

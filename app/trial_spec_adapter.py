@@ -248,6 +248,43 @@ def _add_login_page_wait(source: str) -> Tuple[str, bool]:
     return source, False
 
 
+def _inject_parallel_data_resolver(source: str) -> Tuple[str, bool]:
+    """Inject parallel data resolver logic into test script."""
+    import re
+    
+    # Check if already injected
+    if "ParallelData" in source or "rawReferenceId" in source:
+        return source, False
+    
+    # Find the dataReferenceId assignment - match actual code format
+    pattern = r"(const dataReferenceId = String\(testRow\?\?\.\.\['ReferenceID'\] \?\? ''\)\.trim\(\) \|\| defaultReferenceId;)"
+    
+    if not re.search(pattern, source):
+        return source, False
+    
+    # Inline resolver without external import
+    replacement = (
+        "const rawReferenceId = String(testRow?.['ReferenceID'] ?? '').trim() || defaultReferenceId;\n"
+        "    const dataReferenceId = (() => {\n"
+        "      if (!rawReferenceId.includes(',')) return rawReferenceId;\n"
+        "      const ids = rawReferenceId.split(',').map(id => id.trim()).filter(id => id);\n"
+        "      const workerIndex = testinfo.parallelIndex ?? 0;\n"
+        "      const assignedId = ids[workerIndex % ids.length];\n"
+        "      console.log(`[ParallelData] Worker ${workerIndex} assigned: ${assignedId} from [${ids.join(', ')}]`);\n"
+        "      return assignedId;\n"
+        "    })();"
+    )
+    
+    updated = re.sub(pattern, replacement, source)
+    changed = updated != source
+    
+    if changed:
+        logger.info("[TrialAdapter] Injected inline parallel data resolver")
+        print("[TrialAdapter] Injected inline parallel data resolver")
+    
+    return updated, changed
+
+
 def adapt_spec_content_for_trial(source: str, repo_root: Path) -> Tuple[str, bool]:
     """Return transformed spec content for trial run; bool indicates change."""
     logger.info("[TrialAdapter] ===== Starting spec adaptation for trial run =====")
@@ -260,6 +297,50 @@ def adapt_spec_content_for_trial(source: str, repo_root: Path) -> Tuple[str, boo
 
     updated = source
     changed_any = False
+
+    # Inject per-file Playwright settings to disable tracing and avoid artifact collisions
+    try:
+        should_inject_settings = True
+        # If the file already sets test.use with trace/outputDir, skip injection
+        if re.search(r"\btest\.use\s*\(\s*\{[^{]*trace\s*:\s*'", updated):
+            should_inject_settings = False
+        if re.search(r"\btest\.use\s*\(\s*\{[^{]*outputDir\s*:\s*", updated):
+            should_inject_settings = False
+        if should_inject_settings:
+            settings_block = (
+                "import { test } from '@playwright/test';\n"
+                "const __trialRef = (process.env.DATA_REFERENCE_ID || process.env.REFERENCE_ID || '').trim();\n"
+                "const __trialRunLabel = (__trialRef || `run-${Date.now()}`);\n"
+                "test.use({ trace: 'off', outputDir: `test-results/tmp-${__trialRunLabel}` });\n"
+                "console.log(`[EnvRef] Effective ReferenceID: ${__trialRef || '(empty)'} | outputDir=test-results/tmp-${__trialRunLabel}`);\n"
+            )
+            updated = settings_block + "\n" + updated
+            changed_any = True
+            logger.info("[TrialAdapter] Injected test.use({ trace: 'off', outputDir }) to stabilize trial runs")
+            print("[TrialAdapter] Injected test.use({ trace: 'off', outputDir }) to stabilize trial runs")
+    except Exception:
+        # Non-fatal: continue without injection
+        pass
+    
+    # Ensure env-provided ReferenceID takes precedence over any workerIndex-based selection inside tmp specs.
+    try:
+        helper_fn = (
+            "function __trialRefOverride(v){ try { const e=(process.env.DATA_REFERENCE_ID||process.env.REFERENCE_ID||'').trim(); return e||v; } catch { return v; } }\n"
+        )
+        if "__trialRefOverride" not in updated:
+            updated = helper_fn + updated
+            changed_any = True
+        # Common patterns to override: dataReferenceId assignment and 'assigned' selection variables
+        before = updated
+        updated = re.sub(r"(\b(?:const|let|var)\s+dataReferenceId\s*=\s*)([^;]+);", r"\\1__trialRefOverride(\\2);", updated)
+        updated = re.sub(r"(\b(?:const|let|var)\s+assigned\s*=\s*)([^;]+);", r"\\1__trialRefOverride(\\2);", updated)
+        updated = re.sub(r"(\b(?:const|let|var)\s+assignedId\s*=\s*)([^;]+);", r"\\1(__trialRef || __trialRefOverride(\\2));", updated)
+        if updated != before:
+            changed_any = True
+            logger.info("[TrialAdapter] Wrapped ReferenceID selection with env override (__trialRefOverride)")
+            print("[TrialAdapter] Wrapped ReferenceID selection with env override (__trialRefOverride)")
+    except Exception:
+        pass
 
     # More flexible patterns that match any locator name with .fill()
     # Pattern 1: Try specific flow.userName / flow.password first
@@ -366,6 +447,7 @@ def adapt_spec_content_for_trial(source: str, repo_root: Path) -> Tuple[str, boo
         f"\n[TrialAdapter] ===== Adaptation complete =====\n"
         f"[TrialAdapter] Total changes made: {changed_any}\n"
         f"[TrialAdapter] Changes breakdown:\n"
+        f"  - Parallel resolver injected: {resolver_changed}\n"
         f"  - Username replaced: {user_changed}\n"
         f"  - Password replaced: {pass_changed}\n"
         f"  - Navigation added: {nav_changed}\n"
