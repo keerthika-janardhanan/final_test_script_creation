@@ -58,9 +58,34 @@ PAGE_INJECT_SCRIPT = """
         if (tag === 'a' && el.getAttribute('href')) return 'link';
         if (tag === 'button' || (tag === 'input' && ['button','submit','reset'].includes(type))) return 'button';
         if (tag === 'img') return 'img';
+        // Enhanced checkbox detection
         if (tag === 'input' && type === 'checkbox') return 'checkbox';
+        if (r && r === 'checkbox') return 'checkbox';
+        const cls = (el.className || '').toLowerCase();
+        const id = ((el.id || '') + '').toLowerCase();
+        const name = ((el.getAttribute && el.getAttribute('name')) || '').toLowerCase();
+        const ariaChecked = el.getAttribute && el.getAttribute('aria-checked');
+        // Check class, id, name, or aria-checked for checkbox indicators
+        if (cls.includes('checkbox') || cls.includes('check-box') || cls.includes('check_box')) return 'checkbox';
+        if (id.includes('checkbox') || id.includes('check-box') || id.includes('check_box')) return 'checkbox';
+        if (name.includes('checkbox') || name.includes('check-box') || name.includes('check_box')) return 'checkbox';
+        if (ariaChecked !== null && ariaChecked !== undefined) return 'checkbox';
+        // Check for custom checkbox patterns (Oracle ALTA, Material UI, etc.)
+        if (cls.includes('oj-checkbox') || cls.includes('oj-switch')) return 'checkbox';
+        if (cls.includes('mat-checkbox') || cls.includes('mdc-checkbox')) return 'checkbox';
+        if (cls.includes('p-checkbox') || cls.includes('ui-checkbox')) return 'checkbox';
+        // Radio buttons
         if (tag === 'input' && (type === 'radio')) return 'radio';
-        if (tag === 'input' || tag === 'textarea') return 'textbox';
+        // Textbox detection - be explicit about known input types only
+        if (tag === 'input' && ['text','password','email','tel','url','search','number','date','datetime-local','time','week','month'].includes(type)) return 'textbox';
+        if (tag === 'textarea') return 'textbox';
+        // Default input without type - check if it looks like a text field
+        if (tag === 'input' && !type) {
+            // If it has value attribute or placeholder, likely textbox
+            if (el.hasAttribute && (el.hasAttribute('value') || el.hasAttribute('placeholder'))) return 'textbox';
+            // Otherwise unknown input
+            return 'textbox';
+        }
         if (tag === 'select') return 'combobox';
         if (tag === 'li') return 'listitem';
         if (tag === 'ul' || tag === 'ol') return 'list';
@@ -1053,6 +1078,39 @@ def main() -> None:
                 pass
         page.on("console", _on_console_with_fallback)
         page.on("pageerror", _on_page_error)
+        
+        # Dialog handler (alerts, confirms, prompts)
+        def _on_dialog(dialog) -> None:
+            try:
+                dialog_type = dialog.type  # "alert", "confirm", "prompt", "beforeunload"
+                dialog_msg = dialog.message
+                default_value = dialog.default_value if dialog_type == "prompt" else None
+                
+                sys.stderr.write(f"[recorder][dialog] type={dialog_type} message={dialog_msg[:100]}\n")
+                
+                # Record the dialog event
+                events.append({
+                    "type": "dialog",
+                    "dialogType": dialog_type,
+                    "message": dialog_msg,
+                    "defaultValue": default_value,
+                    "timestamp": time.time()
+                })
+                
+                # Auto-accept dialogs (user can modify generated script to change behavior)
+                if dialog_type == "prompt":
+                    dialog.accept(default_value or "")
+                else:
+                    dialog.accept()
+            except Exception as e:
+                sys.stderr.write(f"[recorder][dialog] Error handling dialog: {e}\n")
+                try:
+                    dialog.dismiss()
+                except Exception:
+                    pass
+        
+        page.on("dialog", _on_dialog)
+        
         # Inject into frames when attached (defensive; context.add_init_script usually covers this)
         try:
             def _on_frame_attached(f: Frame) -> None:
@@ -1072,6 +1130,7 @@ def main() -> None:
                 except Exception:
                     pass
                 _wait_bindings_ready(p)
+                p.on("dialog", _on_dialog)  # Handle dialogs in popup windows
                 try:
                     p.on("framenavigated", lambda f: sys.stderr.write(f"[recorder][framenavigated] {getattr(f, 'url', '')}\n"))
                 except Exception:
@@ -1097,6 +1156,7 @@ def main() -> None:
                 _wait_bindings_ready(p)
                 p.on("console", _on_console_with_fallback)
                 p.on("pageerror", _on_page_error)
+                p.on("dialog", _on_dialog)  # Handle dialogs in new tabs/windows
                 try:
                     p.on("framenavigated", lambda f: sys.stderr.write(f"[recorder][framenavigated] {getattr(f, 'url', '')}\n"))
                 except Exception:

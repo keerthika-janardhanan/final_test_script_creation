@@ -47,10 +47,18 @@ class FileItem(BaseModel):
     content: str
 
 
+class TestDataMapping(BaseModel):
+    columnName: str
+    occurrences: int
+    actionType: str
+    methods: list[str]
+
+
 class PayloadResponse(BaseModel):
     locators: list[FileItem]
     pages: list[FileItem]
     tests: list[FileItem]
+    testDataMapping: list[TestDataMapping]
 
 
 def _unskip_tests_for_trial(source: str) -> tuple[str, int]:
@@ -140,6 +148,7 @@ async def payload(req: PayloadRequest) -> PayloadResponse:
         locators=[FileItem(**f) for f in payload_dict.get("locators", [])],
         pages=[FileItem(**f) for f in payload_dict.get("pages", [])],
         tests=[FileItem(**f) for f in payload_dict.get("tests", [])],
+        testDataMapping=[TestDataMapping(**m) for m in payload_dict.get("testDataMapping", [])],
     )
 
 
@@ -200,6 +209,7 @@ async def payload_stream(req: PayloadRequest) -> StreamingResponse:
                 "locators": len(payload_dict.get("locators", [])),
                 "pages": len(payload_dict.get("pages", [])),
                 "tests": len(payload_dict.get("tests", [])),
+                "testDataMapping": len(payload_dict.get("testDataMapping", [])),
             }
             yield _format_sse({"phase": "payload", "summary": summary})
             yield _format_sse({"phase": "done"})

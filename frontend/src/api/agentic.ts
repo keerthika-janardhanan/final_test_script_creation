@@ -25,11 +25,20 @@ export async function previewAgenticStream(
   });
 }
 
+export interface TestDataMapping {
+  columnName: string;
+  occurrences: number;
+  actionType: string;
+  methods: string[];
+}
+
 export async function generatePayload(scenario: string, acceptedPreview: string) {
-  const { data } = await apiClient.post<{ locators: any[]; pages: any[]; tests: any[] }>(
-    "/agentic/payload",
-    { scenario, acceptedPreview },
-  );
+  const { data } = await apiClient.post<{
+    locators: any[];
+    pages: any[];
+    tests: any[];
+    testDataMapping: TestDataMapping[];
+  }>("/agentic/payload", { scenario, acceptedPreview });
   return data;
 }
 

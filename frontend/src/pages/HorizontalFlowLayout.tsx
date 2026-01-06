@@ -97,6 +97,11 @@ export function HorizontalFlowLayout({ initialStep = 'home' }: HorizontalFlowLay
   const [streamingPayload, setStreamingPayload] = useState(false);
   const [payloadProgress, setPayloadProgress] = useState<string>('');
   const [payloadFiles, setPayloadFiles] = useState<any[]>([]);
+  const [testDataMapping, setTestDataMapping] = useState<any[]>([]);
+  const [activeCodeTab, setActiveCodeTab] = useState<'locators' | 'pages' | 'tests'>('tests');
+  const [editingColumnName, setEditingColumnName] = useState<number | null>(null);
+  const [editedColumnValue, setEditedColumnValue] = useState<string>('');
+  const [regeneratingScript, setRegeneratingScript] = useState(false);
   
   // TestManager fields
   const [testCaseId, setTestCaseId] = useState<string>('');
@@ -750,7 +755,11 @@ export function HorizontalFlowLayout({ initialStep = 'home' }: HorizontalFlowLay
       // Store payload files for persist
       setPayloadFiles(allFiles);
       
+      // Store test data mapping for UI display
+      setTestDataMapping(data.testDataMapping || []);
+      
       console.log('All files:', allFiles);
+      console.log('Test data mapping:', data.testDataMapping);
       
       // Find the test file
       const testFile = allFiles.find((f: any) => 
@@ -822,6 +831,61 @@ ${refinedFlowSteps.map((step: any, idx: number) => {
   await expect(page).toHaveURL(/.*/);
 });
 `;
+  };
+
+  // Handler for editing column names in test data mapping
+  const handleEditColumnName = (idx: number) => {
+    setEditingColumnName(idx);
+    setEditedColumnValue(testDataMapping[idx].columnName);
+  };
+
+  const handleSaveColumnName = async (idx: number) => {
+    if (!editedColumnValue.trim()) {
+      alert('Column name cannot be empty');
+      return;
+    }
+
+    // Update the mapping
+    const updatedMapping = [...testDataMapping];
+    const oldColumnName = updatedMapping[idx].columnName;
+    updatedMapping[idx] = { ...updatedMapping[idx], columnName: editedColumnValue.trim() };
+    setTestDataMapping(updatedMapping);
+    setEditingColumnName(null);
+    
+    // Regenerate scripts with updated column names
+    setRegeneratingScript(true);
+    try {
+      // Update payload files with new column names
+      const updatedFiles = payloadFiles.map((file: any) => {
+        let content = file.content;
+        
+        // Replace column names in the code (case-sensitive string replacement)
+        content = content.replace(new RegExp(`"${oldColumnName}"`, 'g'), `"${editedColumnValue.trim()}"`);
+        content = content.replace(new RegExp(`'${oldColumnName}'`, 'g'), `'${editedColumnValue.trim()}'`);
+        
+        return { ...file, content };
+      });
+
+      setPayloadFiles(updatedFiles);
+      
+      // Update the displayed test script
+      const testFile = updatedFiles.find((f: any) => 
+        f.path.includes('tests/') || f.path.endsWith('.spec.ts')
+      );
+      if (testFile) {
+        setGeneratedScript(testFile.content);
+      }
+    } catch (error) {
+      console.error('Error regenerating scripts:', error);
+      alert('Failed to update scripts with new column names');
+    } finally {
+      setRegeneratingScript(false);
+    }
+  };
+
+  const handleCancelEditColumnName = () => {
+    setEditingColumnName(null);
+    setEditedColumnValue('');
   };
 
   const handleContinueToTestManager = async () => {
@@ -3258,25 +3322,251 @@ ${refinedFlowSteps.map((step: any, idx: number) => {
               transition={{ duration: 0.8, type: 'spring', stiffness: 50 }}
               className="w-full px-6"
             >
-              <div className="max-w-4xl mx-auto">
+              <div className="max-w-7xl mx-auto">
                 <h2 className="text-5xl font-bold mb-12 text-center text-white">Generated Test Script</h2>
                 
-                <div className="bg-gradient-to-br from-green-900/40 to-emerald-600/20 backdrop-blur-xl border-2 border-green-500/30 rounded-3xl p-12">
-                  <div className="mb-8">
-                    <div className="flex items-center justify-between mb-4">
-                      <h4 className="text-xl font-semibold text-white">Playwright TypeScript Code</h4>
-                      <motion.button
-                        whileHover={{ scale: 1.05 }}
-                        whileTap={{ scale: 0.95 }}
-                        className="px-4 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm hover:bg-white/20 transition-all"
-                      >
-                        📋 Copy Code
-                      </motion.button>
+                <div className="bg-gradient-to-br from-green-900/50 to-emerald-700/30 backdrop-blur-2xl border-2 border-green-400/40 rounded-3xl p-16 shadow-2xl">
+                  
+                  {/* Test Data Mapping Section - Expanded */}
+                  {testDataMapping && testDataMapping.length > 0 && (
+                    <div className="mb-10 bg-gradient-to-br from-blue-900/30 to-cyan-800/20 border-2 border-blue-400/30 rounded-2xl p-8">
+                      <div className="flex items-center justify-between mb-6">
+                        <h4 className="text-2xl font-bold text-white flex items-center gap-3">
+                          <span className="text-3xl">📊</span>
+                          Test Data Mapping
+                        </h4>
+                        <span className="text-sm text-blue-200 bg-blue-500/20 px-4 py-2 rounded-full border border-blue-400/30">
+                          Excel columns expected by this script
+                        </span>
+                      </div>
+                      <div className="bg-black/40 rounded-xl p-8 border border-blue-400/20">
+                        <table className="w-full text-base">
+                          <thead>
+                            <tr className="border-b-2 border-blue-400/40">
+                              <th className="text-left py-4 px-4 font-bold text-blue-200">Excel Column Name</th>
+                              <th className="text-center py-4 px-4 font-bold text-blue-200">Action Type</th>
+                              <th className="text-center py-4 px-4 font-bold text-blue-200">Occurrences</th>
+                              <th className="text-left py-4 px-4 font-bold text-blue-200">Methods Used</th>
+                              <th className="text-center py-4 px-4 font-bold text-blue-200">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {testDataMapping.map((mapping: any, idx: number) => (
+                              <tr key={idx} className="border-b border-blue-400/20 hover:bg-blue-500/10 transition-colors">
+                                <td className="py-4 px-4">
+                                  {editingColumnName === idx ? (
+                                    <input
+                                      type="text"
+                                      value={editedColumnValue}
+                                      onChange={(e) => setEditedColumnValue(e.target.value)}
+                                      className="w-full px-3 py-2 bg-black/60 border-2 border-blue-400/60 rounded-lg text-white font-mono font-semibold text-lg focus:outline-none focus:border-blue-400"
+                                      autoFocus
+                                      disabled={regeneratingScript}
+                                    />
+                                  ) : (
+                                    <span className="font-mono text-white font-semibold text-lg">{mapping.columnName}</span>
+                                  )}
+                                </td>
+                                <td className="text-center py-4 px-4">
+                                  <span className={`px-3 py-2 rounded-lg text-sm font-semibold ${
+                                    mapping.actionType === 'fill' ? 'bg-blue-500/30 text-blue-200 border border-blue-400/40' :
+                                    mapping.actionType === 'select' ? 'bg-purple-500/30 text-purple-200 border border-purple-400/40' :
+                                    'bg-gray-500/30 text-gray-200 border border-gray-400/40'
+                                  }`}>
+                                    {mapping.actionType.toUpperCase()}
+                                  </span>
+                                </td>
+                                <td className="text-center py-4 px-4">
+                                  <span className="inline-block bg-cyan-500/20 text-cyan-200 px-3 py-1 rounded-full font-semibold border border-cyan-400/30">
+                                    {mapping.occurrences}x
+                                  </span>
+                                </td>
+                                <td className="py-4 px-4 text-green-300 text-sm">
+                                  {mapping.methods && mapping.methods.length > 0 ? (
+                                    <div className="flex flex-wrap gap-1">
+                                      {mapping.methods.map((method: string, mIdx: number) => (
+                                        <span key={mIdx} className="bg-green-500/20 px-2 py-1 rounded border border-green-400/30 font-mono text-xs">
+                                          {method}()
+                                        </span>
+                                      ))}
+                                    </div>
+                                  ) : '-'}
+                                </td>
+                                <td className="text-center py-4 px-4">
+                                  {editingColumnName === idx ? (
+                                    <div className="flex items-center justify-center gap-2">
+                                      <motion.button
+                                        whileHover={{ scale: 1.1 }}
+                                        whileTap={{ scale: 0.9 }}
+                                        onClick={() => handleSaveColumnName(idx)}
+                                        disabled={regeneratingScript}
+                                        className="p-2 bg-green-600 rounded-lg text-white hover:bg-green-700 disabled:opacity-50 border border-green-400/40"
+                                        title="Save"
+                                      >
+                                        {regeneratingScript ? <Loader2 size={16} className="animate-spin" /> : '✓'}
+                                      </motion.button>
+                                      <motion.button
+                                        whileHover={{ scale: 1.1 }}
+                                        whileTap={{ scale: 0.9 }}
+                                        onClick={handleCancelEditColumnName}
+                                        disabled={regeneratingScript}
+                                        className="p-2 bg-red-600 rounded-lg text-white hover:bg-red-700 disabled:opacity-50 border border-red-400/40"
+                                        title="Cancel"
+                                      >
+                                        ✕
+                                      </motion.button>
+                                    </div>
+                                  ) : (
+                                    <motion.button
+                                      whileHover={{ scale: 1.1 }}
+                                      whileTap={{ scale: 0.9 }}
+                                      onClick={() => handleEditColumnName(idx)}
+                                      className="p-2 bg-blue-600/50 rounded-lg text-white hover:bg-blue-600 border border-blue-400/40"
+                                      title="Edit column name"
+                                    >
+                                      ✏️
+                                    </motion.button>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <div className="mt-6 p-4 bg-yellow-500/10 border border-yellow-400/30 rounded-lg">
+                          <p className="text-sm text-yellow-200 flex items-start gap-2">
+                            <span className="text-lg">💡</span>
+                            <span>
+                              <strong>Tip:</strong> Click the ✏️ icon to rename any column. The scripts will automatically update with your changes!
+                              For dropdown fields, you can use the suffix "(dropdown)". For common/reusable values, use "(common)".
+                            </span>
+                          </p>
+                        </div>
+                      </div>
                     </div>
-                    <div className="bg-black/30 rounded-lg p-6 max-h-96 overflow-y-auto">
-                      <pre className="text-sm text-green-400 font-mono whitespace-pre-wrap">
-                        {generatedScript || '// Generated script will appear here...'}
-                      </pre>
+                  )}
+                  
+                  {/* Generated Files - Tabbed View */}
+                  <div className="mb-10">
+                    <div className="flex items-center justify-between mb-6">
+                      <h4 className="text-2xl font-bold text-white flex items-center gap-3">
+                        <span className="text-3xl">📝</span>
+                        Playwright TypeScript Code
+                      </h4>
+                    </div>
+                    
+                    {/* Tabs for Locators, Pages, Tests */}
+                    <div className="bg-black/40 rounded-xl border border-green-400/30 overflow-hidden">
+                      {/* Tab Headers */}
+                      <div className="flex border-b border-green-400/30 bg-black/30">
+                        {payloadFiles.filter((f: any) => f.path.includes('locators/')).length > 0 && (
+                          <button
+                            onClick={() => setActiveCodeTab('locators')}
+                            className={`flex-1 px-6 py-4 font-semibold transition-all ${
+                              activeCodeTab === 'locators'
+                                ? 'bg-green-500/20 text-green-200 border-b-2 border-green-400'
+                                : 'text-green-400/60 hover:bg-green-500/10 hover:text-green-300'
+                            }`}
+                          >
+                            📍 Locators
+                          </button>
+                        )}
+                        {payloadFiles.filter((f: any) => f.path.includes('pages/')).length > 0 && (
+                          <button
+                            onClick={() => setActiveCodeTab('pages')}
+                            className={`flex-1 px-6 py-4 font-semibold transition-all ${
+                              activeCodeTab === 'pages'
+                                ? 'bg-green-500/20 text-green-200 border-b-2 border-green-400'
+                                : 'text-green-400/60 hover:bg-green-500/10 hover:text-green-300'
+                            }`}
+                          >
+                            📄 Page Objects
+                          </button>
+                        )}
+                        {payloadFiles.filter((f: any) => f.path.includes('tests/') || f.path.endsWith('.spec.ts')).length > 0 && (
+                          <button
+                            onClick={() => setActiveCodeTab('tests')}
+                            className={`flex-1 px-6 py-4 font-semibold transition-all ${
+                              activeCodeTab === 'tests'
+                                ? 'bg-green-500/20 text-green-200 border-b-2 border-green-400'
+                                : 'text-green-400/60 hover:bg-green-500/10 hover:text-green-300'
+                            }`}
+                          >
+                            🧪 Test Specs
+                          </button>
+                        )}
+                      </div>
+                      
+                      {/* Tab Content */}
+                      <div className="p-6">
+                        {activeCodeTab === 'locators' && (
+                          <div>
+                            {payloadFiles.filter((f: any) => f.path.includes('locators/')).map((file: any, idx: number) => (
+                              <div key={idx} className="mb-4">
+                                <div className="flex items-center justify-between mb-2">
+                                  <span className="text-sm text-green-300 font-mono">{file.path}</span>
+                                  <motion.button
+                                    whileHover={{ scale: 1.05 }}
+                                    whileTap={{ scale: 0.95 }}
+                                    onClick={() => navigator.clipboard.writeText(file.content)}
+                                    className="px-3 py-1 bg-white/10 border border-white/20 rounded text-white text-xs hover:bg-white/20 transition-all"
+                                  >
+                                    📋 Copy
+                                  </motion.button>
+                                </div>
+                                <div className="bg-black/50 rounded-lg p-6 max-h-[500px] overflow-y-auto">
+                                  <pre className="text-sm text-green-400 font-mono whitespace-pre-wrap">{file.content}</pre>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        
+                        {activeCodeTab === 'pages' && (
+                          <div>
+                            {payloadFiles.filter((f: any) => f.path.includes('pages/')).map((file: any, idx: number) => (
+                              <div key={idx} className="mb-4">
+                                <div className="flex items-center justify-between mb-2">
+                                  <span className="text-sm text-green-300 font-mono">{file.path}</span>
+                                  <motion.button
+                                    whileHover={{ scale: 1.05 }}
+                                    whileTap={{ scale: 0.95 }}
+                                    onClick={() => navigator.clipboard.writeText(file.content)}
+                                    className="px-3 py-1 bg-white/10 border border-white/20 rounded text-white text-xs hover:bg-white/20 transition-all"
+                                  >
+                                    📋 Copy
+                                  </motion.button>
+                                </div>
+                                <div className="bg-black/50 rounded-lg p-6 max-h-[500px] overflow-y-auto">
+                                  <pre className="text-sm text-green-400 font-mono whitespace-pre-wrap">{file.content}</pre>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        
+                        {activeCodeTab === 'tests' && (
+                          <div>
+                            {payloadFiles.filter((f: any) => f.path.includes('tests/') || f.path.endsWith('.spec.ts')).map((file: any, idx: number) => (
+                              <div key={idx} className="mb-4">
+                                <div className="flex items-center justify-between mb-2">
+                                  <span className="text-sm text-green-300 font-mono">{file.path}</span>
+                                  <motion.button
+                                    whileHover={{ scale: 1.05 }}
+                                    whileTap={{ scale: 0.95 }}
+                                    onClick={() => navigator.clipboard.writeText(file.content)}
+                                    className="px-3 py-1 bg-white/10 border border-white/20 rounded text-white text-xs hover:bg-white/20 transition-all"
+                                  >
+                                    📋 Copy
+                                  </motion.button>
+                                </div>
+                                <div className="bg-black/50 rounded-lg p-6 max-h-[500px] overflow-y-auto">
+                                  <pre className="text-sm text-green-400 font-mono whitespace-pre-wrap">{file.content}</pre>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                   

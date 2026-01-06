@@ -1679,29 +1679,23 @@ class AgenticScriptAgent:
         spec_lines.extend([
             '    const testCaseId = testinfo.title;',
             "    const testRow: Record<string, any> = executionList?.find((row: any) => row['TestCaseID'] === testCaseId) ?? {};",
-            '    const defaultDataStem = (() => {',
-            "      const core = testCaseId.replace(/[^a-z0-9]+/gi, ' ').trim();",
-            "      if (!core) {",
-            "        return 'TestData';",
-            '      }',
-            r"      return core.split(/\s+/).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join('');",
-            '    })();',
-            "    const defaultDatasheetName = `${defaultDataStem}Data.xlsx`;",
-            "    const defaultIdColumn = `${defaultDataStem}ID`;",
-            "    const defaultReferenceId = `${defaultDataStem}001`;",
-            "    const dataSheetName = String(testRow?.['DatasheetName'] ?? '').trim() || defaultDatasheetName;",
+            "    // Only use defaults if DatasheetName is explicitly provided (not empty)",
+            "    const datasheetFromExcel = String(testRow?.['DatasheetName'] ?? '').trim();",
+            "    const dataSheetName = datasheetFromExcel || '';",
             "    const envReferenceId = (process.env.REFERENCE_ID || process.env.DATA_REFERENCE_ID || '').trim();",
-            "    const excelReferenceId = String(testRow?.['ReferenceID'] ?? '').trim() || defaultReferenceId;",
+            "    const excelReferenceId = String(testRow?.['ReferenceID'] ?? '').trim();",
             "    const dataReferenceId = envReferenceId || excelReferenceId;",
-            "    console.log(`[ReferenceID] Using: ${dataReferenceId} (source: ${envReferenceId ? 'env' : 'excel'})`);",
-            "    const dataIdColumn = String(testRow?.['IDName'] ?? '').trim() || defaultIdColumn;",
+            "    if (dataReferenceId) {",
+            "      console.log(`[ReferenceID] Using: ${dataReferenceId} (source: ${envReferenceId ? 'env' : 'excel'})`);",
+            "    }",
+            "    const dataIdColumn = String(testRow?.['IDName'] ?? '').trim();",
             "    const dataSheetTab = String(testRow?.['SheetName'] ?? testRow?.['Sheet'] ?? '').trim();",
             "    const dataDir = path.join(__dirname, '../data');",
             '    fs.mkdirSync(dataDir, { recursive: true });',
             '    let dataRow: Record<string, any> = {};',
             '    const ensureDataFile = (): string | null => {',
             '      if (!dataSheetName) {',
-            "        console.warn(`[DATA] DatasheetName missing for ${testCaseId}; using generated defaults.`);",
+            "        // No datasheet configured - skip data loading (optional datasheet)",
             '        return null;',
             '      }',
             '      const expectedPath = path.join(dataDir, dataSheetName);',
@@ -1753,8 +1747,15 @@ class AgenticScriptAgent:
             '      if (!dataRow || Object.keys(dataRow).length === 0) {',
             "        console.warn(`[DATA] Row not found in ${dataSheetName} for ${dataIdColumn}='${dataReferenceId}'.`);",
             '      }',
-            '    } else if (dataSheetName) {',
-            "      console.warn(`[DATA] DatasheetName provided but ReferenceID/IDName missing for ${testCaseId}. Generated defaults will be used.`);",
+            '    } else if (!dataSheetName) {',
+            "      console.log(`[DATA] No DatasheetName configured for ${testCaseId}. Test will run with hardcoded/default values.`);",
+            '    } else if (dataSheetName && (!dataReferenceId || !dataIdColumn)) {',
+            "      const missingFields = [];",
+            "      if (!dataReferenceId) missingFields.push('ReferenceID');",
+            "      if (!dataIdColumn) missingFields.push('IDName');",
+            "      const message = `DatasheetName='${dataSheetName}' is provided but ${missingFields.join(' and ')} ${missingFields.length > 1 ? 'are' : 'is'} missing. Please provide ${missingFields.join(' and ')} in testmanager.xlsx for '${testCaseId}'.`;",
+            "      console.error(`[DATA] ${message}`);",
+            '      throw new Error(message);',
             '    }',
             '',
         ])
@@ -1827,6 +1828,19 @@ class AgenticScriptAgent:
         spec_lines.append('});')
         spec_content = "\n".join(spec_lines).rstrip() + os.linesep
 
+        # Build test data mapping for UI display
+        test_data_mapping = []
+        for data_key in sorted(fallback_map.keys()):
+            bindings_for_key = [b for b in data_bindings if b['data_key'] == data_key]
+            occurrences = len(bindings_for_key)
+            action_types = list({b['action_category'] for b in bindings_for_key})
+            test_data_mapping.append({
+                'columnName': data_key,
+                'occurrences': occurrences,
+                'actionType': action_types[0] if len(action_types) == 1 else 'mixed',
+                'methods': [b['method_name'] for b in bindings_for_key]
+            })
+
         return {
             'locators': [
                 {'path': resolve_relative(locators_path), 'content': locators_content}
@@ -1837,6 +1851,7 @@ class AgenticScriptAgent:
             'tests': [
                 {'path': resolve_relative(test_path), 'content': spec_content}
             ],
+            'testDataMapping': test_data_mapping,
         }
 
     @staticmethod
