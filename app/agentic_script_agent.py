@@ -1762,21 +1762,19 @@ class AgenticScriptAgent:
 
         login_step_emitted = False
         has_data_bindings = bool(data_bindings)
+        test_step_counter = 0  # Separate counter for actual test steps (excludes login)
 
         for idx, ref in enumerate(step_refs):
             raw = ref.get('raw') or {}
-            note = raw.get('navigation') or raw.get('action') or raw.get('expected') or f'Step {idx}'
-            step_title = json.dumps(f'Step {idx} - {note}')
-            comment = raw.get('navigation') or raw.get('action') or ''
-            key = ref.get('key')
-            action = ref.get('action') or ''
-            data_value = ref.get('data') or ''
-            locator_expr = f"{page_var}.{key}" if key else ''
             handled_by = ref.get('handled_by')
             home_method = ref.get('home_method')
 
+            # Handle login steps - emit once, then skip all subsequent login steps
             if handled_by == 'login' and login_page_file:
                 if not login_step_emitted:
+                    note = raw.get('navigation') or raw.get('action') or raw.get('expected') or 'Login'
+                    step_title = json.dumps(f'Step {test_step_counter} - {note}')
+                    comment = raw.get('navigation') or raw.get('action') or ''
                     spec_lines.append(f'    await namedStep({step_title}, page, testinfo, async () => {{')
                     if comment:
                         spec_lines.append(f'      // {comment}')
@@ -1789,7 +1787,17 @@ class AgenticScriptAgent:
                     spec_lines.append('    });')
                     spec_lines.append('')
                     login_step_emitted = True
-                continue
+                    test_step_counter += 1  # Only increment for the one login step emitted
+                continue  # Skip all other login steps
+
+            # Generate actual test step with correct sequential numbering
+            note = raw.get('navigation') or raw.get('action') or raw.get('expected') or f'Step {test_step_counter}'
+            step_title = json.dumps(f'Step {test_step_counter} - {note}')
+            comment = raw.get('navigation') or raw.get('action') or ''
+            key = ref.get('key')
+            action = ref.get('action') or ''
+            data_value = ref.get('data') or ''
+            locator_expr = f"{page_var}.{key}" if key else ''
 
             spec_lines.append(f'    await namedStep({step_title}, page, testinfo, async () => {{')
             if comment:
@@ -1824,6 +1832,7 @@ class AgenticScriptAgent:
             spec_lines.append(f'      attachScreenshot({step_title}, testinfo, screenshot);')
             spec_lines.append('    });')
             spec_lines.append('')
+            test_step_counter += 1  # Increment counter for each actual test step
         spec_lines.append('  });')
         spec_lines.append('});')
         spec_content = "\n".join(spec_lines).rstrip() + os.linesep

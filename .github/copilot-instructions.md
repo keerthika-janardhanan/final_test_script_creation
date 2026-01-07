@@ -1,17 +1,17 @@
 # Copilot instructions for this repo
 
-Goal: Help AI agents generate high‑quality manual test cases and Playwright scripts for enterprise web apps (Oracle Fusion focus) by using the recorder output, a Chroma vector DB, and Azure OpenAI. The Streamlit app orchestrates most flows end‑to‑end.
+Goal: Help AI agents generate high‑quality manual test cases and Playwright scripts for enterprise web apps (Oracle Fusion focus) by using the recorder output, a Chroma vector DB, and Azure OpenAI. The React frontend with FastAPI backend orchestrates most flows end‑to‑end.
 
 ## Big picture
 - Recorder (Python + Playwright): `app/run_playwright_recorder_v2.py` (preferred) or `app/run_playwright_recorder.py` writes `recordings/<session>/metadata.json`, plus `dom/*.html`, `screenshots/*.png`, `network.har`, `trace.zip`.
 - Ingestion + Vector DB: `app/ingest.py`, `app/ingest_utils.py`, `app/vector_db.py` load Jira/docs/UI crawl/recorder flows/repo scaffolds into Chroma with stable ids and flattened metadata.
 - Manual test cases: `app/test_case_generator.py` queries the vector DB and crafts structured cases; `map_llm_to_template()` maps to Excel columns.
-- Agentic scripts: `app/agentic_script_agent.py`, `app/llm_client.py`, `app/framework_adapter.py`, and `app/streamlit_app.py` build previews, generate TS assets, self‑heal selectors, and push to external framework repos.
+- Agentic scripts: `app/agentic_script_agent.py`, `app/llm_client.py`, `app/framework_adapter.py` build previews, generate TS assets, self‑heal selectors, and push to external framework repos.
 - Utilities: locators (`app/locator_generator.py`), TS parsing (`app/parse_playwright.py`), browser utils (`app/browser_utils.py`), metadata + hashing (`app/metadata_utils.py`, `app/hashstore.py`).
 
 ## Core workflows (PowerShell examples)
 - Recorder: `python -m app.run_playwright_recorder_v2 --url "https://..." --output-dir recordings --session-name demo --capture-dom` (Ctrl+C to finalize `metadata.json`).
-- Streamlit UI: `streamlit run app/streamlit_app.py` to record, ingest, generate manual cases (Excel), and run the agentic flow.
+- React UI: `npm run dev` from frontend/ directory to start the development server; FastAPI backend runs on port 8001.
 - Vector DB CLI (data under `./vector_store` or `VECTOR_DB_PATH`):
   - Query: `python -m app.vector_db query "Create Supplier" --top-k 5`
   - List: `python -m app.vector_db list --limit 50`
@@ -27,7 +27,7 @@ Goal: Help AI agents generate high‑quality manual test cases and Playwright sc
 - LLM config: use Azure via `langchain_openai.AzureChatOpenAI` with env vars `AZURE_OPENAI_KEY`, `AZURE_OPENAI_ENDPOINT`, `OPENAI_API_VERSION`, `AZURE_OPENAI_DEPLOYMENT`.
 - Selector strategy: prefer Playwright `getByRole/getByLabel/getByText`; only fall back to resilient XPath unions from `locator_generator.to_union_xpath()`.
 
-## Agentic script flow (Streamlit)
+## Agentic script flow (React UI)
 1) Describe scenario → preview steps (Markdown) via `AgenticScriptAgent.generate_preview`.
 2) Confirm preview (“confirm/yes”) → LLM produces JSON of files (`locators/pages/tests`) aligned to `FrameworkProfile` discovery of pages/locators/tests dirs in the target repo.
 3) “push” writes files to the detected repo structure and optionally pushes via `git_utils.push_to_git`.

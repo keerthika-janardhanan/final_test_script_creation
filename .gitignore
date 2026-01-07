@@ -2,3 +2,16 @@
 .env.local
 frontend/.env
 frontend/.env.local
+
+# Recording artifacts (contain sensitive auth tokens)
+recordings/
+app/generated_flows/
+
+# Test trial configs (contain credentials)
+trial_run_config.json
+authenticate_once.py
+
+# Storage state files (contain session tokens)
+storage_state.json
+auth_state.json
+*.storage.json

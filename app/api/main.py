@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import threading
 from pathlib import Path
@@ -18,6 +19,15 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+
+# Custom log filter to suppress noisy status polling
+class StatusPollFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Suppress GET /recorder-sync/status/* logs
+        return "/recorder-sync/status/" not in record.getMessage()
+
+# Apply filter to uvicorn access logger
+logging.getLogger("uvicorn.access").addFilter(StatusPollFilter())
 
 # Ensure .env is loaded for Azure/OpenAI and other settings
 try:

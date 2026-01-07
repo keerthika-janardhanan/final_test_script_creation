@@ -24,6 +24,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from collections import deque
 
+# Windows keyboard input
+try:
+    import msvcrt
+    HAS_MSVCRT = True
+except ImportError:
+    HAS_MSVCRT = False
+
 from playwright.sync_api import (
     Browser,
     BrowserContext,
@@ -422,6 +429,12 @@ class RecorderSession:
         self._runtime_lookup: Dict[int, str] = {}
         self._page_counter = 0
 
+        # Pause/resume state
+        self._is_paused = False
+        self._pause_count = 0
+        self._last_pause_at: Optional[str] = None
+        self._last_resume_at: Optional[str] = None
+
         self.metadata_version = "2025.10"
         self._persist()
 
@@ -496,6 +509,72 @@ class RecorderSession:
         if viewport and "viewport" not in self.environment:
             self.environment["viewport"] = dict(viewport)
         return entry
+
+    def pause_recording(self) -> None:
+        """Pause the recording - user can still interact, but no events/DOM captured."""
+        if self._is_paused:
+            return  # Already paused
+        self._is_paused = True
+        self._pause_count += 1
+        self._last_pause_at = _iso_now()
+        
+        # Add pause marker to actions
+        pause_marker = {
+            "action": "pause",
+            "type": "pause",
+            "actionId": f"PAUSE-{self._pause_count}",
+            "timestamp": self._last_pause_at,
+            "timestampEpochMs": int(time.time() * 1000),
+            "receivedAt": self._last_pause_at,
+            "pageUrl": "",
+            "pageTitle": "",
+            "pageId": "",
+            "element": {},
+            "extra": {"reason": "User pressed P to pause recording"},
+            "selectorStrategies": {},
+            "inputSummary": None,
+            "artifacts": {}
+        }
+        self.actions.append(pause_marker)
+        self._persist()
+        print("\n" + "="*60)
+        print("|| RECORDING PAUSED ||")
+        print("   You can continue interacting with the browser.")
+        print("   Actions will NOT be captured until you resume.")
+        print("   Press 'R' to RESUME recording")
+        print("="*60 + "\n")
+
+    def resume_recording(self) -> None:
+        """Resume the recording after a pause."""
+        if not self._is_paused:
+            return  # Not paused
+        self._is_paused = False
+        self._last_resume_at = _iso_now()
+        
+        # Add resume marker to actions
+        resume_marker = {
+            "action": "resume",
+            "type": "resume",
+            "actionId": f"RESUME-{self._pause_count}",
+            "timestamp": self._last_resume_at,
+            "timestampEpochMs": int(time.time() * 1000),
+            "receivedAt": self._last_resume_at,
+            "pageUrl": "",
+            "pageTitle": "",
+            "pageId": "",
+            "element": {},
+            "extra": {"pausedAt": self._last_pause_at, "resumedAfter": "User pressed R"},
+            "selectorStrategies": {},
+            "inputSummary": None,
+            "artifacts": {}
+        }
+        self.actions.append(resume_marker)
+        self._persist()
+        print("\n" + "="*60)
+        print(">> RECORDING RESUMED <<")
+        print("   Now capturing all actions and DOM snapshots.")
+        print("   Press 'P' to PAUSE again if needed")
+        print("="*60 + "\n")
 
     # ---- Serialization helpers -------------------------------------------
     def _build_selector_strategies(self, element: Dict[str, Any]) -> Dict[str, Optional[str]]:
@@ -594,6 +673,10 @@ class RecorderSession:
 
     # ---- Public API ------------------------------------------------------
     def add_page_event(self, payload: Dict[str, Any], runtime_page: Optional[Page] = None) -> None:
+        # Skip if paused
+        if self._is_paused:
+            return
+        
         data = dict(payload or {})
         data["receivedAt"] = _iso_now()
 
@@ -621,6 +704,10 @@ class RecorderSession:
         self._persist()
 
     def add_action(self, payload: Dict[str, Any], runtime_page: Optional[Page] = None) -> None:
+        # Skip if paused
+        if self._is_paused:
+            return
+        
         data = dict(payload or {})
         received_at = _iso_now()
         data["receivedAt"] = received_at
@@ -795,6 +882,7 @@ def _build_context(
     proxy_server: Optional[str] = None,
     launch_args: Optional[List[str]] = None,
     bypass_csp: bool = False,
+    storage_state: Optional[str] = None,
 ) -> BrowserContext:
     name = normalize_browser_name(browser_name, SUPPORTED_BROWSERS)
     factory = getattr(playwright, name)
@@ -811,6 +899,8 @@ def _build_context(
         ctx_kwargs.update(record_har_path=str(har_path), record_har_mode="minimal")
     if user_agent:
         ctx_kwargs["user_agent"] = user_agent
+    if storage_state:
+        ctx_kwargs["storage_state"] = storage_state
     return browser.new_context(**ctx_kwargs)
 
 
@@ -849,6 +939,7 @@ def main() -> None:
     parser.add_argument("--disable-gpu", action="store_true")
     parser.add_argument("--bypass-csp", action="store_true")
     parser.add_argument("--flow-name", default=None)
+    parser.add_argument("--auth-state", default=None, help="Path to saved authentication state JSON file")
 
     args = parser.parse_args()
     try:
@@ -932,6 +1023,7 @@ def main() -> None:
             proxy_server=args.proxy,
             launch_args=launch_args_list,
             bypass_csp=args.bypass_csp,
+            storage_state=args.auth_state,
         )
         browser = context.browser
 
@@ -1125,6 +1217,18 @@ def main() -> None:
             def _on_popup(p: Page) -> None:
                 nonlocal active_page
                 active_page = p
+                sys.stderr.write(f"[recorder][popup] Detected popup, waiting for navigation...\n")
+                # Wait for the popup to navigate away from about:blank before injecting script
+                try:
+                    # Wait up to 10 seconds for a real URL (not about:blank)
+                    p.wait_for_function(
+                        "() => window.location.href && !window.location.href.includes('about:blank')",
+                        timeout=10000
+                    )
+                    sys.stderr.write(f"[recorder][popup] Navigated to: {p.url}\n")
+                except Exception as e:
+                    sys.stderr.write(f"[recorder][popup] Timeout waiting for navigation: {e}\n")
+                
                 try:
                     p.add_init_script(PAGE_INJECT_SCRIPT)
                 except Exception:
@@ -1139,7 +1243,6 @@ def main() -> None:
                     p.on("frameattached", _on_frame_attached)
                 except Exception:
                     pass
-                sys.stderr.write(f"[recorder][popup] {getattr(p, 'url', lambda: '')()}\n")
             page.on("popup", _on_popup)
         except Exception:
             pass
@@ -1198,6 +1301,86 @@ def main() -> None:
                 page.wait_for_load_state("load", timeout=20000)
             except Exception:
                 pass
+
+        # Wait for authentication to complete before recording
+        print("\n" + "="*70)
+        print("WAITING FOR AUTHENTICATION")
+        print("="*70)
+        print(f"\nTarget URL: {args.url}")
+        print("\nThe recorder is waiting for:")
+        print("  1. Complete any authentication/login manually")
+        print("  2. Wait until the page returns to the target URL")
+        print("  3. Wait until page content is fully loaded")
+        print("\nMonitoring page... (this happens automatically)")
+        print("="*70 + "\n")
+        
+        # Monitor URL and content to detect when ready
+        from urllib.parse import urlparse
+        target_domain = urlparse(args.url).netloc
+        ready_to_record = False
+        
+        for attempt in range(120):  # Wait up to 2 minutes
+            try:
+                current_url = page.url
+                current_domain = urlparse(current_url).netloc
+                
+                # Check if we're back on the target domain
+                if target_domain in current_domain or current_domain in target_domain:
+                    # Check if page has actual content (not blank/loading)
+                    try:
+                        has_content = page.evaluate("""() => {
+                            const body = document.body;
+                            if (!body) return false;
+                            const text = body.innerText || body.textContent || '';
+                            // Has meaningful content if more than 100 characters
+                            return text.trim().length > 100;
+                        }""")
+                        
+                        if has_content:
+                            ready_to_record = True
+                            print(f"\n[✓] Page ready! URL: {current_url}")
+                            print("[✓] Content detected - RECORDING NOW\n")
+                            break
+                    except Exception:
+                        pass
+                
+                time.sleep(1)
+            except Exception:
+                time.sleep(1)
+        
+        if not ready_to_record:
+            print("\n[!] Timeout waiting for page to load - starting recording anyway\n")
+
+        # Print pause/resume instructions
+        print("\n" + "="*70)
+        print(">> RECORDER ACTIVE <<")
+        print("   Press 'P' to PAUSE recording (skip authentication/loading)")
+        print("   Press 'R' to RESUME recording")
+        print("   Press Ctrl+C to STOP and save")
+        print("="*70 + "\n")
+        sys.stderr.flush()
+
+        # Keyboard listener for pause/resume (Windows only)
+        keyboard_stop_flag = threading.Event()
+        def keyboard_listener():
+            """Listen for P/R keypresses to pause/resume recording."""
+            if not HAS_MSVCRT:
+                return
+            while not keyboard_stop_flag.is_set() and not stop_event.is_set():
+                try:
+                    if msvcrt.kbhit():
+                        key = msvcrt.getch().decode('utf-8', errors='ignore').upper()
+                        if key == 'P' and session and not session._is_paused:
+                            session.pause_recording()
+                        elif key == 'R' and session and session._is_paused:
+                            session.resume_recording()
+                    time.sleep(0.1)
+                except Exception:
+                    pass
+        
+        if HAS_MSVCRT:
+            kbd_thread = threading.Thread(target=keyboard_listener, daemon=True)
+            kbd_thread.start()
 
         # Helpers for safe capture on the main thread
         def _safe_get_outer_html(p: Optional[Page]) -> Optional[str]:
